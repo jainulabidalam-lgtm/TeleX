@@ -32,6 +32,7 @@ import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import com.google.firebase.auth.FirebaseAuth
 
 sealed class Screen {
     object Login : Screen()
@@ -137,10 +138,13 @@ fun E2EEChatApp(
         when (targetScreen) {
             is Screen.Login -> {
                 LoginScreen(
-                    onLoginSuccess = { email ->
+                    onLoginSuccess = {
+                        val email = FirebaseAuth.getInstance().currentUser?.email ?: ""
                         coroutineScope.launch {
-                            keys.ensureKeysForUser(email)
-                            prefs.saveLoginState(email = email, isLoggedIn = true)
+                            if (email.isNotBlank()) {
+                                keys.ensureKeysForUser(email)
+                                prefs.saveLoginState(email = email, isLoggedIn = true)
+                            }
                         }
                         loggedInUserEmail = email
                         currentScreen = Screen.ChatList
