@@ -25,6 +25,7 @@ import com.e2eechat.app.model.MessageStatus
 import com.e2eechat.app.ui.screens.ChatListScreen
 import com.e2eechat.app.ui.screens.ChatScreen
 import com.e2eechat.app.ui.screens.LoginScreen
+import com.e2eechat.app.ui.screens.SettingsScreen
 import com.e2eechat.app.ui.theme.DarkBackground
 import com.e2eechat.app.ui.theme.E2EEChatTheme
 import kotlinx.coroutines.flow.first
@@ -37,6 +38,7 @@ import com.google.firebase.auth.FirebaseAuth
 sealed class Screen {
     object Login : Screen()
     object ChatList : Screen()
+    object Settings : Screen()
     data class ChatDetail(val chatId: String) : Screen()
 }
 
@@ -99,7 +101,7 @@ fun E2EEChatApp(
         }
     }
 
-    BackHandler(enabled = currentScreen is Screen.ChatDetail) {
+    BackHandler(enabled = currentScreen is Screen.ChatDetail || currentScreen is Screen.Settings) {
         currentScreen = Screen.ChatList
     }
 
@@ -109,7 +111,7 @@ fun E2EEChatApp(
     AnimatedContent(
         targetState = activeScreen,
         transitionSpec = {
-            if (targetState is Screen.ChatDetail || (initialState is Screen.Login && targetState is Screen.ChatList)) {
+            if (targetState is Screen.ChatDetail || targetState is Screen.Settings || (initialState is Screen.Login && targetState is Screen.ChatList)) {
                 // Forward navigation: Slide in from right + Fade in
                 (slideInHorizontally(
                     animationSpec = tween(350),
@@ -160,6 +162,20 @@ fun E2EEChatApp(
                     },
                     onNewChatClick = {
                         onToast("New Encrypted Chat started")
+                    },
+                    onSettingsClick = {
+                        currentScreen = Screen.Settings
+                    }
+                )
+            }
+            is Screen.Settings -> {
+                SettingsScreen(
+                    onLogout = {
+                        coroutineScope.launch {
+                            prefs.clearLoginState()
+                            loggedInUserEmail = null
+                            currentScreen = Screen.Login
+                        }
                     }
                 )
             }
