@@ -10,6 +10,7 @@ import com.e2eechat.app.model.MessageStatus
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val database = AppDatabase.getInstance(application)
@@ -63,6 +64,30 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
     }
+
+    fun uploadImageAndSend(chatId: String, imageUri: android.net.Uri, senderId: String, timestamp: String) {
+        viewModelScope.launch {
+            try {
+                val storageRef = com.google.firebase.storage.FirebaseStorage.getInstance().reference
+                val fileRef = storageRef.child("chat_images/${chatId}/${System.currentTimeMillis()}.jpg")
+                fileRef.putFile(imageUri).await()
+                val downloadUrl = fileRef.downloadUrl.await().toString()
+
+                val message = Message(
+                    id = "msg_${System.currentTimeMillis()}",
+                    senderId = senderId,
+                    text = "",
+                    timestamp = timestamp,
+                    isFromMe = true,
+                    status = MessageStatus.READ,
+                    imageUrl = downloadUrl
+                )
+                sendMessage(chatId, message)
+            } catch (e: Exception) {
+                // Upload failed, could add error state here later
+            }
+        }
+    }
 }
 
 private fun ChatEntity.toChat() = Chat(
@@ -95,7 +120,8 @@ private fun MessageEntity.toMessage() = Message(
     text = content,
     timestamp = timestamp,
     isFromMe = isSentByMe,
-    status = if (isRead) MessageStatus.READ else MessageStatus.SENT
+    status = if (isRead) MessageStatus.READ else MessageStatus.SENT,
+    imageUrl = imageUrl
 )
 
 private fun Message.toEntity(chatId: String) = MessageEntity(
@@ -104,5 +130,6 @@ private fun Message.toEntity(chatId: String) = MessageEntity(
     content = text,
     timestamp = timestamp,
     isSentByMe = isFromMe,
-    isRead = status == MessageStatus.READ
+    isRead = status == MessageStatus.READ,
+    imageUrl = imageUrl
 )

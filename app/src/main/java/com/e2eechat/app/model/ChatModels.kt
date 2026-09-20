@@ -12,7 +12,8 @@ data class Message(
     val text: String,
     val timestamp: String,
     val isFromMe: Boolean,
-    val status: MessageStatus = MessageStatus.READ
+    val status: MessageStatus = MessageStatus.READ,
+    val imageUrl: String? = null
 )
 
 data class Chat(

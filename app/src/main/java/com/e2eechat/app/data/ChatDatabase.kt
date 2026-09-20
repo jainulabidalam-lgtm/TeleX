@@ -44,7 +44,8 @@ data class MessageEntity(
     val content: String,
     val timestamp: String,
     val isSentByMe: Boolean,
-    val isRead: Boolean
+    val isRead: Boolean,
+    val imageUrl: String? = null
 )
 
 @Dao
@@ -74,7 +75,7 @@ interface MessageDao {
     suspend fun insertMessage(message: MessageEntity)
 }
 
-@Database(entities = [ChatEntity::class, MessageEntity::class], version = 1, exportSchema = false)
+@Database(entities = [ChatEntity::class, MessageEntity::class], version = 2, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun chatDao(): ChatDao
     abstract fun messageDao(): MessageDao
@@ -89,7 +90,7 @@ abstract class AppDatabase : RoomDatabase() {
                     context.applicationContext,
                     AppDatabase::class.java,
                     "e2eechat.db"
-                ).build().also { instance = it }
+                ).fallbackToDestructiveMigration().build().also { instance = it }
             }
     }
 }

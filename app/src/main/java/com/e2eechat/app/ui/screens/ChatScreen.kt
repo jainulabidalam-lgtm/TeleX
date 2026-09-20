@@ -1,5 +1,8 @@
 package com.e2eechat.app.ui.screens
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -13,6 +16,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Phone
@@ -23,28 +27,35 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.tooling.preview.Preview
+import coil.compose.AsyncImage
 import com.e2eechat.app.data.MockData
 import com.e2eechat.app.model.Chat
 import com.e2eechat.app.model.Message
 import com.e2eechat.app.ui.theme.*
-import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(
     chat: Chat,
     onBackClick: () -> Unit,
-    onSendMessage: (String) -> Unit
+    onSendMessage: (String) -> Unit,
+    onSendImage: (Uri) -> Unit = {}
 ) {
     var inputText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
 
-    // Auto scroll to newest message when messages change or on screen open
+    val imagePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        uri?.let { onSendImage(it) }
+    }
+
     LaunchedEffect(chat.messages.size) {
         if (chat.messages.isNotEmpty()) {
             listState.animateScrollToItem(chat.messages.size - 1)
@@ -75,7 +86,6 @@ fun ChatScreen(
                     Row(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        // Contact Avatar Initials
                         Box(
                             modifier = Modifier
                                 .size(38.dp)
@@ -139,7 +149,6 @@ fun ChatScreen(
             )
         },
         bottomBar = {
-            // Bottom Message Input Bar
             Surface(
                 color = MaterialTheme.colorScheme.surface,
                 tonalElevation = 8.dp,
@@ -148,12 +157,21 @@ fun ChatScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 10.dp)
+                        .padding(horizontal = 8.dp, vertical = 10.dp)
                         .navigationBarsPadding()
                         .imePadding(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Rounded Text Field
+                    IconButton(
+                        onClick = { imagePickerLauncher.launch("image/*") }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.AttachFile,
+                            contentDescription = "Attach Image",
+                            tint = AccentLightViolet
+                        )
+                    }
+
                     OutlinedTextField(
                         value = inputText,
                         onValueChange = { inputText = it },
@@ -182,7 +200,6 @@ fun ChatScreen(
 
                     Spacer(modifier = Modifier.width(8.dp))
 
-                    // Circular Send Button
                     IconButton(
                         onClick = { handleSend() },
                         enabled = inputText.isNotBlank(),
@@ -230,19 +247,18 @@ private fun MessageBubble(
 ) {
     val isFromMe = message.isFromMe
 
-    // Shape with tail effect: sharp corner on sender side
     val bubbleShape = if (isFromMe) {
         RoundedCornerShape(
             topStart = 18.dp,
             topEnd = 18.dp,
             bottomStart = 18.dp,
-            bottomEnd = 4.dp // Sharp tail bottom-right
+            bottomEnd = 4.dp
         )
     } else {
         RoundedCornerShape(
             topStart = 18.dp,
             topEnd = 18.dp,
-            bottomStart = 4.dp, // Sharp tail bottom-left
+            bottomStart = 4.dp,
             bottomEnd = 18.dp
         )
     }
@@ -265,18 +281,33 @@ private fun MessageBubble(
                 )
         ) {
             Column(
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
-            ) {
-                // Message Content
-                Text(
-                    text = message.text,
-                    style = Typography.bodyLarge,
-                    color = if (isFromMe) BubbleSentText else MaterialTheme.colorScheme.onSurface
+                modifier = Modifier.padding(
+                    horizontal = if (message.imageUrl != null) 6.dp else 14.dp,
+                    vertical = if (message.imageUrl != null) 6.dp else 10.dp
                 )
+            ) {
+                if (message.imageUrl != null) {
+                    AsyncImage(
+                        model = message.imageUrl,
+                        contentDescription = "Attached image",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .widthIn(max = 260.dp)
+                            .heightIn(max = 260.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                }
 
-                Spacer(modifier = Modifier.height(4.dp))
+                if (message.text.isNotBlank()) {
+                    Text(
+                        text = message.text,
+                        style = Typography.bodyLarge,
+                        color = if (isFromMe) BubbleSentText else MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                }
 
-                // Timestamp inside bubble
                 Row(
                     modifier = Modifier.align(Alignment.End),
                     verticalAlignment = Alignment.CenterVertically
@@ -302,10 +333,6 @@ private fun MessageBubble(
     }
 }
 
-// -----------------------------------------------------------------------------
-// PREVIEWS
-// -----------------------------------------------------------------------------
-
 @Preview(showBackground = true, backgroundColor = 0xFF09090D, name = "Chat Screen - Dark Mode")
 @Composable
 private fun ChatScreenDarkPreview() {
@@ -329,4 +356,3 @@ private fun ChatScreenLightPreview() {
         )
     }
 }
-

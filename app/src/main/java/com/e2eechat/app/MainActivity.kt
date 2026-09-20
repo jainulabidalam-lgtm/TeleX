@@ -202,6 +202,15 @@ fun E2EEChatApp(
                                     status = MessageStatus.READ
                                 )
                             )
+                        },
+                        onSendImage = { uri ->
+                            val currentTime = java.text.SimpleDateFormat("hh:mm a", java.util.Locale.getDefault()).format(java.util.Date())
+                            chatViewModel.uploadImageAndSend(
+                                targetScreen.chatId,
+                                uri,
+                                loggedInUserEmail ?: "me",
+                                currentTime
+                            )
                         }
                     )
                 }
