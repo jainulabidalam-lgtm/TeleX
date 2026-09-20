@@ -1,21 +1,31 @@
 package com.e2eechat.app.data
 
 import android.app.Application
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.room.withTransaction
 import com.e2eechat.app.model.Chat
 import com.e2eechat.app.model.Message
 import com.e2eechat.app.model.MessageStatus
+import io.github.jan.supabase.createSupabaseClient
+import io.github.jan.supabase.storage.Storage
+import io.github.jan.supabase.storage.storage
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.tasks.await
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val database = AppDatabase.getInstance(application)
     private val chatDao = database.chatDao()
     private val messageDao = database.messageDao()
+
+    private val supabase = createSupabaseClient(
+        supabaseUrl = "https://taivxyserowgwioffjob.supabase.co",
+        supabaseKey = "sb_publishable_NaKHhP54MD64THYf1EbuVw_t6NTLP7Y"
+    ) {
+        install(Storage)
+    }
 
     val chats: Flow<List<Chat>> = chatDao.getAllChats().map { chats ->
         chats.map { it.toChat() }
@@ -65,13 +75,23 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun uploadImageAndSend(chatId: String, imageUri: android.net.Uri, senderId: String, timestamp: String) {
+    fun uploadImageAndSend(chatId: String, imageUri: Uri, senderId: String, timestamp: String) {
         viewModelScope.launch {
             try {
-                val storageRef = com.google.firebase.storage.FirebaseStorage.getInstance().reference
-                val fileRef = storageRef.child("chat_images/${chatId}/${System.currentTimeMillis()}.jpg")
-                fileRef.putFile(imageUri).await()
-                val downloadUrl = fileRef.downloadUrl.await().toString()
+                val context = getApplication<Application>()
+                val inputStream = context.contentResolver.openInputStream(imageUri)
+                val bytes = inputStream?.readBytes()
+                inputStream?.close()
+
+                if (bytes == null) {
+                    android.util.Log.e("ChatViewModel", "Could not read image bytes")
+                    return@launch
+                }
+
+                val fileName = "${chatId}_${System.currentTimeMillis()}.jpg"
+                val bucket = supabase.storage.from("chat-images")
+                bucket.upload(fileName, bytes)
+                val publicUrl = bucket.publicUrl(fileName)
 
                 val message = Message(
                     id = "msg_${System.currentTimeMillis()}",
@@ -80,11 +100,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     timestamp = timestamp,
                     isFromMe = true,
                     status = MessageStatus.READ,
-                    imageUrl = downloadUrl
+                    imageUrl = publicUrl
                 )
                 sendMessage(chatId, message)
             } catch (e: Exception) {
-                // Upload failed, could add error state here later
+                android.util.Log.e("ChatViewModel", "Image upload failed", e)
             }
         }
     }
