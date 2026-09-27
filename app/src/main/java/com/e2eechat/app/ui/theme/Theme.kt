@@ -27,18 +27,18 @@ private val DarkColorScheme = darkColorScheme(
 )
 
 private val LightColorScheme = lightColorScheme(
-    primary = AccentBlueViolet,
-    onPrimary = TextOnAccent,
-    primaryContainer = Color(0xFFF0EBFF),
-    onPrimaryContainer = AccentBlueViolet,
-    secondary = AccentLightViolet,
-    background = Color(0xFFF8F9FA),
-    surface = Color(0xFFFFFFFF),
-    surfaceVariant = Color(0xFFF1F3F5),
-    onBackground = Color(0xFF1A1A24),
-    onSurface = Color(0xFF1A1A24),
-    onSurfaceVariant = Color(0xFF6C757D),
-    outline = Color(0xFFDEE2E6)
+    primary = CaramelAccent,
+    onPrimary = Color(0xFFFFFFFF),
+    primaryContainer = CaramelAccentLight,
+    onPrimaryContainer = MilkCoffeeTextPrimary,
+    secondary = CaramelAccentDark,
+    background = MilkCoffeeBackground,
+    surface = MilkCoffeeSurface,
+    surfaceVariant = MilkCoffeeSurfaceVariant,
+    onBackground = MilkCoffeeTextPrimary,
+    onSurface = MilkCoffeeTextPrimary,
+    onSurfaceVariant = MilkCoffeeTextSecondary,
+    outline = MilkCoffeeBorder
 )
 
 @Composable

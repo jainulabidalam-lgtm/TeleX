@@ -12,20 +12,25 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.e2eechat.app.data.AuthState
 import com.e2eechat.app.data.AuthViewModel
+import com.e2eechat.app.ui.icons.EyeOpenIcon
+import com.e2eechat.app.ui.icons.EyeOffIcon
 
 @Composable
 fun LoginScreen(
     authViewModel: AuthViewModel = viewModel(),
-    onLoginSuccess: () -> Unit
+    onLoginSuccess: () -> Unit,
+    onNeedsOnboarding: () -> Unit = {}
 ) {
     val context = LocalContext.current
     var isSignUpMode by remember { mutableStateOf(false) }
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var passwordVisible by remember { mutableStateOf(false) }
     val authState by authViewModel.authState
 
     val googleLauncher = rememberLauncherForActivityResult(
@@ -37,8 +42,10 @@ fun LoginScreen(
     }
 
     LaunchedEffect(authState) {
-        if (authState is AuthState.Success) {
-            onLoginSuccess()
+        when (authState) {
+            is AuthState.Success -> onLoginSuccess()
+            is AuthState.NeedsOnboarding -> onNeedsOnboarding()
+            else -> {}
         }
     }
 
@@ -74,7 +81,15 @@ fun LoginScreen(
             value = password,
             onValueChange = { password = it },
             label = { Text("Password") },
-            visualTransformation = PasswordVisualTransformation(),
+            visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+            trailingIcon = {
+                IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                    Icon(
+                        imageVector = if (passwordVisible) EyeOpenIcon else EyeOffIcon,
+                        contentDescription = if (passwordVisible) "Hide password" else "Show password"
+                    )
+                }
+            },
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
             modifier = Modifier.fillMaxWidth()
         )

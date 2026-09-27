@@ -42,36 +42,11 @@ fun ChatListScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "Chats",
-                            style = Typography.headlineMedium,
-                            color = MaterialTheme.colorScheme.onBackground
-                        )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(AccentMutedBg)
-                                .padding(horizontal = 8.dp, vertical = 4.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.Lock,
-                                contentDescription = "Encrypted",
-                                tint = SecurityLockBadge,
-                                modifier = Modifier.size(13.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = "E2EE",
-                                style = Typography.labelMedium.copy(fontSize = 11.sp, fontWeight = FontWeight.Bold),
-                                color = SecurityLockBadge
-                            )
-                        }
-                    }
+                    Text(
+                        text = "Chats",
+                        style = Typography.headlineMedium,
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
                 },
                 actions = {
                     IconButton(onClick = { /* Search preview */ }) {
@@ -97,10 +72,10 @@ fun ChatListScreen(
         floatingActionButton = {
             FloatingActionButton(
                 onClick = onNewChatClick,
-                containerColor = AccentBlueViolet,
-                contentColor = TextOnAccent,
+                containerColor = FabGrey,
+                contentColor = Color.White,
                 shape = RoundedCornerShape(18.dp),
-                modifier = Modifier.shadow(12.dp, RoundedCornerShape(18.dp), spotColor = AccentGlow)
+                modifier = Modifier.shadow(8.dp, RoundedCornerShape(18.dp))
             ) {
                 Icon(
                     imageVector = Icons.Filled.Add,
@@ -200,7 +175,7 @@ private fun ChatRowItem(
                 Text(
                     text = chat.lastMessageTimestamp,
                     style = Typography.labelMedium,
-                    color = if (chat.unreadCount > 0) AccentLightViolet else MaterialTheme.colorScheme.onSurfaceVariant
+                    color = if (chat.unreadCount > 0) CaramelAccentDark else MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
@@ -225,7 +200,7 @@ private fun ChatRowItem(
                     Box(
                         modifier = Modifier
                             .clip(CircleShape)
-                            .background(AccentBlueViolet)
+                            .background(CaramelAccent)
                             .padding(horizontal = 7.dp, vertical = 2.dp),
                         contentAlignment = Alignment.Center
                     ) {

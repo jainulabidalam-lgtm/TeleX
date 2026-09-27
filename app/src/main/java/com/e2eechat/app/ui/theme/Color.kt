@@ -34,3 +34,21 @@ val TextPrimary = Color(0xFFF5F5FA)
 val TextSecondary = Color(0x99A0A0B2)
 val TextMuted = Color(0x66A0A0B2)
 val TextOnAccent = Color(0xFFFFFFFF)
+
+// Milk Coffee / Deep Beige Light Theme
+val MilkCoffeeBackground = Color(0xFFEFE6D8)
+val MilkCoffeeSurface = Color(0xFFE8DDCC)
+val MilkCoffeeSurfaceVariant = Color(0xFFDCCDB3)
+val MilkCoffeeBorder = Color(0xFFC9B896)
+val CaramelAccent = Color(0xFFB98A4A)
+val CaramelAccentLight = Color(0xFFD8AE72)
+val CaramelAccentDark = Color(0xFF8A6530)
+val MilkCoffeeTextPrimary = Color(0xFF3E2F1C)
+val MilkCoffeeTextSecondary = Color(0xFF7A6A50)
+
+val BubbleSentCaramel = Color(0xFFE8C9A0)
+val BubbleSentCaramelText = Color(0xFF4A3419)
+val BubbleReceivedGrey = Color(0xFFE4E2DD)
+val BubbleReceivedGreyText = Color(0xFF3E3D38)
+
+val FabGrey = Color(0xFF4A4A46)

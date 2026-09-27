@@ -271,7 +271,7 @@ private fun MessageBubble(
     ) {
         Surface(
             shape = bubbleShape,
-            color = if (isFromMe) BubbleSentBg else MaterialTheme.colorScheme.surfaceVariant,
+            color = if (isFromMe) BubbleSentCaramel else BubbleReceivedGrey,
             modifier = Modifier
                 .widthIn(max = 290.dp)
                 .border(
@@ -303,7 +303,7 @@ private fun MessageBubble(
                     Text(
                         text = message.text,
                         style = Typography.bodyLarge,
-                        color = if (isFromMe) BubbleSentText else MaterialTheme.colorScheme.onSurface
+                        color = if (isFromMe) BubbleSentCaramelText else BubbleReceivedGreyText
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                 }
