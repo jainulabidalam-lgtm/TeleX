@@ -75,6 +75,28 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun createOrGetChatWithUser(otherUid: String, otherUsername: String, myUid: String, onChatReady: (String) -> Unit) {
+        viewModelScope.launch {
+            val chatId = listOf(myUid, otherUid).sorted().joinToString("_")
+            val existing = chatDao.findById(chatId)
+            if (existing == null) {
+                val newChat = ChatEntity(
+                    id = chatId,
+                    contactName = otherUsername,
+                    contactInitials = otherUsername.take(2).uppercase(),
+                    lastMessage = "",
+                    timestamp = "",
+                    unreadCount = 0,
+                    isOnline = false,
+                    avatarColorHex = 0xFF6E56CFL,
+                    lastSeenText = "New chat"
+                )
+                chatDao.insertChat(newChat)
+            }
+            onChatReady(chatId)
+        }
+    }
+
     fun uploadImageAndSend(chatId: String, imageUri: Uri, senderId: String, timestamp: String) {
         viewModelScope.launch {
             try {

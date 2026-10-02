@@ -29,6 +29,7 @@ import com.e2eechat.app.ui.screens.ChatScreen
 import com.e2eechat.app.ui.screens.LoginScreen
 import com.e2eechat.app.ui.screens.ProfilePictureScreen
 import com.e2eechat.app.ui.screens.SettingsScreen
+import com.e2eechat.app.ui.screens.UserBrowseScreen
 import com.e2eechat.app.ui.screens.UsernameDobScreen
 import com.e2eechat.app.ui.theme.E2EEChatTheme
 import kotlinx.coroutines.flow.first
@@ -42,6 +43,7 @@ sealed class Screen {
     object Login : Screen()
     object ChatList : Screen()
     object Settings : Screen()
+    object UserBrowse : Screen()
     object UsernameDob : Screen()
     object ProfilePicture : Screen()
     data class ChatDetail(val chatId: String) : Screen()
@@ -117,7 +119,7 @@ fun E2EEChatApp(
     AnimatedContent(
         targetState = activeScreen,
         transitionSpec = {
-            if (targetState is Screen.ChatDetail || targetState is Screen.Settings || targetState is Screen.UsernameDob || targetState is Screen.ProfilePicture || (initialState is Screen.Login && targetState is Screen.ChatList)) {
+            if (targetState is Screen.ChatDetail || targetState is Screen.Settings || targetState is Screen.UsernameDob || targetState is Screen.ProfilePicture || targetState is Screen.UserBrowse || (initialState is Screen.Login && targetState is Screen.ChatList)) {
                 // Forward navigation: Slide in from right + Fade in
                 (slideInHorizontally(
                     animationSpec = tween(350),
@@ -197,7 +199,7 @@ fun E2EEChatApp(
                         currentScreen = Screen.ChatDetail(chatId)
                     },
                     onNewChatClick = {
-                        onToast("New Encrypted Chat started")
+                        currentScreen = Screen.UserBrowse
                     },
                     onSettingsClick = {
                         currentScreen = Screen.Settings
@@ -211,6 +213,19 @@ fun E2EEChatApp(
                             prefs.clearLoginState()
                             loggedInUserEmail = null
                             currentScreen = Screen.Login
+                        }
+                    }
+                )
+            }
+            is Screen.UserBrowse -> {
+                UserBrowseScreen(
+                    onBackClick = {
+                        currentScreen = Screen.ChatList
+                    },
+                    onUserSelected = { user ->
+                        val myUid = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: ""
+                        chatViewModel.createOrGetChatWithUser(user.uid, user.username, myUid) { chatId ->
+                            currentScreen = Screen.ChatDetail(chatId)
                         }
                     }
                 )
