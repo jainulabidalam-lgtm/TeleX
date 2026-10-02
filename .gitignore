@@ -7,3 +7,6 @@ app/google-services.json
 *.iml
 .idea/
 local.properties
+
+.kotlin/
+build_log.txt
