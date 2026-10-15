@@ -102,6 +102,14 @@ class AuthViewModel : ViewModel() {
         val uid = auth.currentUser?.uid ?: return
         viewModelScope.launch {
             try {
+                val existing = firestore.collection("users")
+                    .whereEqualTo("username", username)
+                    .get().await()
+                val takenByOther = existing.documents.any { it.id != uid }
+                if (takenByOther) {
+                    authState.value = AuthState.Error("Username already taken")
+                    return@launch
+                }
                 val data = hashMapOf(
                     "username" to username,
                     "dob" to dob,

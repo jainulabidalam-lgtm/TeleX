@@ -1,11 +1,14 @@
 package com.e2eechat.app.model
 
+import androidx.compose.runtime.Immutable
+
 enum class MessageStatus {
     SENT,
     DELIVERED,
     READ
 }
 
+@Immutable
 data class Message(
     val id: String,
     val senderId: String,
@@ -16,6 +19,7 @@ data class Message(
     val imageUrl: String? = null
 )
 
+@Immutable
 data class Chat(
     val id: String,
     val contactName: String,

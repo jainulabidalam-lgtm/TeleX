@@ -10,12 +10,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -25,8 +23,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.tooling.preview.Preview
-import com.e2eechat.app.data.MockData
 import com.e2eechat.app.model.Chat
 import com.e2eechat.app.ui.theme.*
 
@@ -44,8 +40,8 @@ fun ChatListScreen(
                 title = {
                     Text(
                         text = "Chats",
-                        style = Typography.headlineMedium,
-                        color = MaterialTheme.colorScheme.onBackground
+                        style = Typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
+                        color = TeleXTextPrimary
                     )
                 },
                 actions = {
@@ -53,58 +49,88 @@ fun ChatListScreen(
                         Icon(
                             imageVector = Icons.Outlined.Search,
                             contentDescription = "Search",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            tint = TeleXTextSecondary
                         )
                     }
                     IconButton(onClick = onSettingsClick) {
                         Icon(
                             imageVector = Icons.Outlined.Settings,
                             contentDescription = "Settings",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            tint = TeleXTextSecondary
                         )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background
+                    containerColor = TeleXBackground
                 )
             )
         },
         floatingActionButton = {
             FloatingActionButton(
                 onClick = onNewChatClick,
-                containerColor = FabGrey,
-                contentColor = Color.White,
-                shape = RoundedCornerShape(18.dp),
-                modifier = Modifier.shadow(8.dp, RoundedCornerShape(18.dp))
+                containerColor = TeleXPrimary,
+                contentColor = TeleXTextOnPrimary,
+                shape = RoundedCornerShape(16.dp),
+                elevation = FloatingActionButtonDefaults.elevation(
+                    defaultElevation = 2.dp,
+                    pressedElevation = 4.dp
+                )
             ) {
                 Icon(
                     imageVector = Icons.Filled.Add,
                     contentDescription = "New Chat",
-                    modifier = Modifier.size(26.dp)
+                    modifier = Modifier.size(24.dp)
                 )
             }
         },
-        containerColor = MaterialTheme.colorScheme.background
+        containerColor = TeleXBackground
     ) { paddingValues ->
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues),
-            contentPadding = PaddingValues(bottom = 88.dp)
-        ) {
-            items(
-                items = chats,
-                key = { it.id }
-            ) { chat ->
-                ChatRowItem(
-                    chat = chat,
-                    onClick = { onChatSelected(chat.id) }
-                )
-                HorizontalDivider(
-                    modifier = Modifier.padding(start = 82.dp, end = 16.dp),
-                    thickness = 0.5.dp,
-                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
-                )
+        if (chats.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(paddingValues)
+                    .padding(32.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Text(
+                        text = "No conversations yet",
+                        style = Typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                        color = TeleXTextPrimary
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "Tap the + button below to start a private chat.",
+                        style = Typography.bodyMedium,
+                        color = TeleXTextSecondary
+                    )
+                }
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(paddingValues),
+                contentPadding = PaddingValues(bottom = 88.dp)
+            ) {
+                items(
+                    items = chats,
+                    key = { it.id }
+                ) { chat ->
+                    ChatRowItem(
+                        chat = chat,
+                        onClick = { onChatSelected(chat.id) }
+                    )
+                    HorizontalDivider(
+                        modifier = Modifier.padding(start = 78.dp, end = 16.dp),
+                        thickness = 0.5.dp,
+                        color = TeleXDivider
+                    )
+                }
             }
         }
     }
@@ -119,37 +145,38 @@ private fun ChatRowItem(
         modifier = Modifier
             .fillMaxWidth()
             .clickable { onClick() }
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+            .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Circular Avatar with Initials + Online Status Dot
+        // Flat circular avatar with initials + online indicator
         Box(
-            modifier = Modifier.size(54.dp)
+            modifier = Modifier.size(50.dp)
         ) {
-            // Avatar Circle
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .clip(CircleShape)
-                    .background(Color(chat.avatarColorHex)),
+                    .background(TeleXPrimaryContainer),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
                     text = chat.avatarInitials,
-                    style = Typography.titleMedium.copy(fontWeight = FontWeight.Bold, fontSize = 18.sp),
-                    color = Color.White
+                    style = Typography.titleMedium.copy(
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 17.sp
+                    ),
+                    color = TeleXPrimaryDeep
                 )
             }
 
-            // Online-status dot
             if (chat.isOnline) {
                 Box(
                     modifier = Modifier
-                        .size(15.dp)
+                        .size(14.dp)
                         .align(Alignment.BottomEnd)
                         .clip(CircleShape)
-                        .background(OnlineGreen)
-                        .border(2.dp, MaterialTheme.colorScheme.background, CircleShape)
+                        .background(TeleXOnlineGreen)
+                        .border(2.dp, TeleXBackground, CircleShape)
                 )
             }
         }
@@ -168,18 +195,18 @@ private fun ChatRowItem(
                 Text(
                     text = chat.contactName,
                     style = Typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-                    color = MaterialTheme.colorScheme.onBackground,
+                    color = TeleXTextPrimary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
                     text = chat.lastMessageTimestamp,
-                    style = Typography.labelMedium,
-                    color = if (chat.unreadCount > 0) CaramelAccentDark else MaterialTheme.colorScheme.onSurfaceVariant
+                    style = Typography.labelMedium.copy(fontSize = 11.5.sp),
+                    color = if (chat.unreadCount > 0) TeleXPrimaryDark else TeleXTextMuted
                 )
             }
 
-            Spacer(modifier = Modifier.height(4.dp))
+            Spacer(modifier = Modifier.height(3.dp))
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -187,9 +214,9 @@ private fun ChatRowItem(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = chat.lastMessage,
+                    text = chat.lastMessage.ifBlank { "Tap to open chat" },
                     style = Typography.bodyMedium,
-                    color = if (chat.unreadCount > 0) MaterialTheme.colorScheme.onBackground else MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = if (chat.unreadCount > 0) TeleXTextPrimary else TeleXTextSecondary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
@@ -200,14 +227,17 @@ private fun ChatRowItem(
                     Box(
                         modifier = Modifier
                             .clip(CircleShape)
-                            .background(CaramelAccent)
+                            .background(TeleXPrimary)
                             .padding(horizontal = 7.dp, vertical = 2.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
                             text = chat.unreadCount.toString(),
-                            style = Typography.labelMedium.copy(fontWeight = FontWeight.Bold, fontSize = 11.sp),
-                            color = TextOnAccent
+                            style = Typography.labelMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 11.sp
+                            ),
+                            color = TeleXTextOnPrimary
                         )
                     }
                 }
@@ -215,32 +245,3 @@ private fun ChatRowItem(
         }
     }
 }
-
-// -----------------------------------------------------------------------------
-// PREVIEWS
-// -----------------------------------------------------------------------------
-
-@Preview(showBackground = true, backgroundColor = 0xFF09090D, name = "Chat List Screen - Dark Mode")
-@Composable
-private fun ChatListScreenDarkPreview() {
-    E2EEChatTheme(darkTheme = true) {
-        ChatListScreen(
-            chats = MockData.sampleChats,
-            onChatSelected = {},
-            onNewChatClick = {}
-        )
-    }
-}
-
-@Preview(showBackground = true, backgroundColor = 0xFFF8F9FA, name = "Chat List Screen - Light Mode")
-@Composable
-private fun ChatListScreenLightPreview() {
-    E2EEChatTheme(darkTheme = false) {
-        ChatListScreen(
-            chats = MockData.sampleChats,
-            onChatSelected = {},
-            onNewChatClick = {}
-        )
-    }
-}
-
