@@ -136,13 +136,35 @@ class KeyManager(private val context: Context) {
      * and Kyber prekey for PQXDH) exist locally.
      *
      * Idempotent: Never regenerates identity keys if they already exist.
+     * Synchronizes and preserves existing keys if user was previously identified by email.
      */
     suspend fun ensureKeysForUser(
         userIdentifier: String,
+        fallbackIdentifier: String? = null,
         preKeyCount: Int = DEFAULT_PREKEY_COUNT
     ): KeyGenerationResult = withContext(Dispatchers.IO) {
         val id = userIdentifier.trim().lowercase()
+        val fallback = fallbackIdentifier?.trim()?.lowercase().orEmpty()
         require(id.isNotEmpty()) { "User identifier cannot be blank" }
+
+        // Migration and synchronization between UID and email:
+        // 1. If 'id' has no keys, but 'fallback' has keys, copy fallback keys to 'id'.
+        if (!hasKeysForUser(id) && fallback.isNotEmpty() && hasKeysForUser(fallback)) {
+            val fallbackKeys = loadKeysForUser(fallback)
+            if (fallbackKeys != null) {
+                copyKeys(fallback, id, fallbackKeys)
+            }
+        }
+        // 2. If both exist, but fallback is an email (originally published to Firestore)
+        // and id is a UID, copy fallback keys to id to guarantee local store matches Firestore.
+        else if (hasKeysForUser(id) && fallback.isNotEmpty() && hasKeysForUser(fallback)) {
+            if (fallback.contains("@") && !id.contains("@")) {
+                val emailKeys = loadKeysForUser(fallback)
+                if (emailKeys != null) {
+                    copyKeys(fallback, id, emailKeys)
+                }
+            }
+        }
 
         if (hasKeysForUser(id)) {
             val existing = loadKeysForUser(id)
@@ -159,6 +181,41 @@ class KeyManager(private val context: Context) {
         }
 
         generateAndStoreKeys(id, preKeyCount)
+    }
+
+    private fun copyKeys(sourceId: String, destId: String, sourceKeys: KeyGenerationResult) {
+        val s = sourceId.trim().lowercase()
+        val d = destId.trim().lowercase()
+        if (s.isEmpty() || d.isEmpty() || s == d) return
+
+        securePreferences.edit().apply {
+            putBoolean(userKey(d, "has_keys"), true)
+            putInt(userKey(d, "registration_id"), sourceKeys.registrationId)
+            putString(
+                userKey(d, "identity_key_pair"),
+                Base64.encodeToString(sourceKeys.identityKeyPair.serialize(), Base64.NO_WRAP)
+            )
+            putInt(userKey(d, "signed_prekey_id"), sourceKeys.signedPreKeyRecord.id)
+            putLong(userKey(d, "signed_prekey_timestamp"), sourceKeys.signedPreKeyRecord.timestamp)
+            putString(
+                userKey(d, "signed_prekey_record"),
+                Base64.encodeToString(sourceKeys.signedPreKeyRecord.serialize(), Base64.NO_WRAP)
+            )
+            putInt(userKey(d, "kyber_prekey_id"), sourceKeys.kyberPreKeyRecord.id)
+            putLong(userKey(d, "kyber_prekey_timestamp"), sourceKeys.kyberPreKeyRecord.timestamp)
+            putString(
+                userKey(d, "kyber_prekey_record"),
+                Base64.encodeToString(sourceKeys.kyberPreKeyRecord.serialize(), Base64.NO_WRAP)
+            )
+            putInt(userKey(d, "prekey_count"), sourceKeys.preKeyRecords.size)
+            sourceKeys.preKeyRecords.forEach { preKey ->
+                putString(
+                    userKey(d, "prekey_${preKey.id}"),
+                    Base64.encodeToString(preKey.serialize(), Base64.NO_WRAP)
+                )
+            }
+            apply()
+        }
     }
 
     /**
@@ -314,9 +371,12 @@ class KeyManager(private val context: Context) {
     /**
      * Obtains a fully initialized [SignalProtocolStore] backed by Android Keystore for this user.
      */
-    suspend fun getProtocolStore(userIdentifier: String): SignalProtocolStore = withContext(Dispatchers.IO) {
+    suspend fun getProtocolStore(
+        userIdentifier: String,
+        fallbackIdentifier: String? = null
+    ): SignalProtocolStore = withContext(Dispatchers.IO) {
         val id = userIdentifier.trim().lowercase()
-        val keys = ensureKeysForUser(id)
+        val keys = ensureKeysForUser(id, fallbackIdentifier = fallbackIdentifier)
 
         val store = KeystoreSignalProtocolStore(
             context = context,
@@ -325,17 +385,11 @@ class KeyManager(private val context: Context) {
             localRegistrationId = keys.registrationId
         )
 
-        // Ensure store has local keys populated
-        if (!store.containsSignedPreKey(keys.signedPreKeyRecord.id)) {
-            store.storeSignedPreKey(keys.signedPreKeyRecord.id, keys.signedPreKeyRecord)
-        }
-        if (!store.containsKyberPreKey(keys.kyberPreKeyRecord.id)) {
-            store.storeKyberPreKey(keys.kyberPreKeyRecord.id, keys.kyberPreKeyRecord)
-        }
+        // Ensure store has local keys populated and synchronized with published key material
+        store.storeSignedPreKey(keys.signedPreKeyRecord.id, keys.signedPreKeyRecord)
+        store.storeKyberPreKey(keys.kyberPreKeyRecord.id, keys.kyberPreKeyRecord)
         keys.preKeyRecords.forEach { preKey ->
-            if (!store.containsPreKey(preKey.id)) {
-                store.storePreKey(preKey.id, preKey)
-            }
+            store.storePreKey(preKey.id, preKey)
         }
 
         store

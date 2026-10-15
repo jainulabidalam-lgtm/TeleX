@@ -94,6 +94,7 @@ class KeystoreSignalProtocolStore(
             IdentityKeyStore.IdentityChange.NEW_OR_UNCHANGED
         } else {
             prefs.edit().putString(key, newBase64).apply()
+            deleteSession(address)
             IdentityKeyStore.IdentityChange.REPLACED_EXISTING
         }
     }
@@ -104,7 +105,7 @@ class KeystoreSignalProtocolStore(
         direction: IdentityKeyStore.Direction
     ): Boolean {
         val trusted = getIdentity(address)
-        return trusted == null || trusted == identityKey
+        return trusted == null || trusted == identityKey || direction == IdentityKeyStore.Direction.SENDING
     }
 
     override fun getIdentity(address: SignalProtocolAddress): IdentityKey? {

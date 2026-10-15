@@ -114,15 +114,18 @@ fun E2EEChatApp(
     LaunchedEffect(Unit) {
         val loggedIn = prefs.isLoggedIn.first()
         val email = prefs.userEmail.first()
-        val uid = FirebaseAuth.getInstance().currentUser?.uid
+        val user = FirebaseAuth.getInstance().currentUser
+        val uid = user?.uid?.trim().orEmpty()
         if (loggedIn && !email.isNullOrBlank()) {
-            val keyRes = keys.ensureKeysForUser(email)
-            if (!uid.isNullOrBlank()) {
+            if (uid.isNotBlank()) {
+                val keyRes = keys.ensureKeysForUser(userIdentifier = uid, fallbackIdentifier = email)
                 try {
                     keys.publishPublicPreKeyBundle(uid, keyRes)
                 } catch (e: Exception) {
-                    android.util.Log.e("MainActivity", "Failed to sync prekey bundle to Firestore", e)
+                    android.util.Log.e("MainActivity", "Failed to sync prekey bundle to Firestore on startup for uid: $uid", e)
                 }
+            } else {
+                android.util.Log.e("MainActivity", "Firebase UID is blank on startup, cannot sync prekey bundle")
             }
             loggedInUserEmail = email
             currentScreen = Screen.ChatList
@@ -176,24 +179,26 @@ fun E2EEChatApp(
                 LoginScreen(
                     authViewModel = authViewModel,
                     onLoginSuccess = {
-                        val user = FirebaseAuth.getInstance().currentUser
-                        val email = user?.email ?: ""
-                        val uid = user?.uid ?: ""
                         coroutineScope.launch {
-                            if (email.isNotBlank()) {
-                                val keyRes = keys.ensureKeysForUser(email)
-                                if (uid.isNotBlank()) {
-                                    try {
-                                        keys.publishPublicPreKeyBundle(uid, keyRes)
-                                    } catch (e: Exception) {
-                                        android.util.Log.e("MainActivity", "Failed to publish prekeys on login", e)
-                                    }
-                                }
+                            val user = FirebaseAuth.getInstance().currentUser
+                            val email = user?.email?.trim().orEmpty()
+                            val uid = user?.uid?.trim().orEmpty()
+                            if (email.isBlank() || uid.isBlank()) {
+                                android.util.Log.e("MainActivity", "Cannot publish prekeys on login: blank email or UID (email='$email', uid='$uid')")
+                                snackbarHostState.showSnackbar("Login failed: missing user credentials. Please try again.")
+                                return@launch
+                            }
+                            try {
+                                val keyRes = keys.ensureKeysForUser(userIdentifier = uid, fallbackIdentifier = email)
+                                keys.publishPublicPreKeyBundle(uid, keyRes)
                                 prefs.saveLoginState(email = email, isLoggedIn = true)
+                                loggedInUserEmail = email
+                                currentScreen = Screen.ChatList
+                            } catch (e: Exception) {
+                                android.util.Log.e("MainActivity", "Failed to publish prekeys on login for uid: $uid", e)
+                                snackbarHostState.showSnackbar("Failed to publish encryption keys: ${e.localizedMessage ?: "Network error"}. Please try again.")
                             }
                         }
-                        loggedInUserEmail = email
-                        currentScreen = Screen.ChatList
                     },
                     onNeedsOnboarding = {
                         currentScreen = Screen.UsernameDob
@@ -213,24 +218,26 @@ fun E2EEChatApp(
                 ProfilePictureScreen(
                     onDone = { uri ->
                         authViewModel.uploadProfilePictureAndFinish(uri, context) {
-                            val user = FirebaseAuth.getInstance().currentUser
-                            val email = user?.email ?: ""
-                            val uid = user?.uid ?: ""
                             coroutineScope.launch {
-                                if (email.isNotBlank()) {
-                                    val keyRes = keys.ensureKeysForUser(email)
-                                    if (uid.isNotBlank()) {
-                                        try {
-                                            keys.publishPublicPreKeyBundle(uid, keyRes)
-                                        } catch (e: Exception) {
-                                            android.util.Log.e("MainActivity", "Failed to publish prekeys on onboarding finish", e)
-                                        }
-                                    }
+                                val user = FirebaseAuth.getInstance().currentUser
+                                val email = user?.email?.trim().orEmpty()
+                                val uid = user?.uid?.trim().orEmpty()
+                                if (email.isBlank() || uid.isBlank()) {
+                                    android.util.Log.e("MainActivity", "Cannot complete onboarding: authenticated user has blank email or UID (email='$email', uid='$uid')")
+                                    snackbarHostState.showSnackbar("Profile setup error: missing user credentials. Please try again.")
+                                    return@launch
+                                }
+                                try {
+                                    val keyRes = keys.ensureKeysForUser(userIdentifier = uid, fallbackIdentifier = email)
+                                    keys.publishPublicPreKeyBundle(uid, keyRes)
                                     prefs.saveLoginState(email = email, isLoggedIn = true)
+                                    loggedInUserEmail = email
+                                    currentScreen = Screen.ChatList
+                                } catch (e: Exception) {
+                                    android.util.Log.e("MainActivity", "Failed to publish Signal prekeys on onboarding finish for uid: $uid", e)
+                                    snackbarHostState.showSnackbar("Failed to publish encryption keys: ${e.localizedMessage ?: "Network error"}. Please tap to retry.")
                                 }
                             }
-                            loggedInUserEmail = email
-                            currentScreen = Screen.ChatList
                         }
                     }
                 )

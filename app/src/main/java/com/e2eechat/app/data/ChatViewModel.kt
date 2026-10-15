@@ -55,6 +55,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private val myUid: String get() = auth.currentUser?.uid ?: ""
+    private val myEmail: String get() = auth.currentUser?.email?.trim()?.lowercase().orEmpty()
 
     // Cache message flows per chatId to avoid creating new Firestore listeners on every recomposition
     private val messageFlowCache = ConcurrentHashMap<String, Flow<List<Message>>>()
@@ -317,7 +318,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
                 // Serialized session encryption under mutex
                 val ciphertextMessage: CiphertextMessage = getMutexFor(otherUid).withLock {
-                    val store = keyManager.getProtocolStore(myUid)
+                    val store = keyManager.getProtocolStore(myUid, myEmail)
 
                     // If no existing session with recipient, establish one using published PreKeyBundle
                     if (!store.containsSession(recipientAddress)) {
@@ -379,7 +380,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     ): String? = withContext(Dispatchers.IO) {
         getMutexFor(senderUid).withLock {
             try {
-                val store = keyManager.getProtocolStore(myUid)
+                val store = keyManager.getProtocolStore(myUid, myEmail)
                 val senderAddress = SignalProtocolAddress(senderUid, KeyManager.DEVICE_ID)
                 val cipher = SessionCipher(store, senderAddress)
                 val ciphertextBytes = Base64.decode(ciphertextBase64, Base64.NO_WRAP)
@@ -410,7 +411,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 android.util.Log.w("ChatViewModel", "Duplicate message – already decrypted from $senderUid")
                 null
             } catch (e: Exception) {
-                android.util.Log.e("ChatViewModel", "Decryption failed for sender $senderUid: ${e.javaClass.simpleName}: ${e.message}")
+                android.util.Log.e("ChatViewModel", "Decryption failed for sender $senderUid: ${e.javaClass.simpleName}: ${e.message}", e)
                 null
             }
         }
