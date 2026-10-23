@@ -71,6 +71,21 @@ interface MessageDao {
     @Query("SELECT * FROM messages WHERE chatId = :chatId ORDER BY rowid")
     fun getMessagesForChat(chatId: String): Flow<List<MessageEntity>>
 
+    @Query("SELECT * FROM messages WHERE chatId = :chatId")
+    suspend fun getMessagesForChatList(chatId: String): List<MessageEntity>
+
+    @Query("SELECT content FROM messages WHERE id = :id LIMIT 1")
+    suspend fun getPlaintextById(id: String): String?
+
+    @Query("SELECT * FROM messages WHERE id = :id LIMIT 1")
+    suspend fun getMessageById(id: String): MessageEntity?
+
+    @Query("UPDATE messages SET isRead = :isRead WHERE id = :id")
+    suspend fun updateMessageStatus(id: String, isRead: Boolean)
+
+    @Query("UPDATE messages SET content = :content WHERE id = :id")
+    suspend fun updateMessageContent(id: String, content: String)
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertMessage(message: MessageEntity)
 }

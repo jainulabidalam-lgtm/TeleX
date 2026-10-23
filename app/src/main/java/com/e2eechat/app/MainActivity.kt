@@ -10,11 +10,14 @@ import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -101,6 +104,7 @@ fun E2EEChatApp(
     val chatsState by chatViewModel.chats.collectAsStateWithLifecycle(emptyList())
     val snackbarHostState = remember { SnackbarHostState() }
     val sendError by chatViewModel.sendError.collectAsStateWithLifecycle()
+    val identityMismatch by chatViewModel.identityMismatch.collectAsStateWithLifecycle()
 
     // Show a Snackbar whenever a send error occurs, then auto-clear it
     LaunchedEffect(sendError) {
@@ -109,6 +113,41 @@ fun E2EEChatApp(
             snackbarHostState.showSnackbar(err)
             chatViewModel.clearSendError()
         }
+    }
+
+    // Explicit re-verification / recovery dialog when an identity change is detected
+    identityMismatch?.let { mismatch ->
+        AlertDialog(
+            onDismissRequest = { chatViewModel.clearIdentityMismatch() },
+            title = { Text("Security Alert: Safety Number Changed") },
+            text = {
+                Text(
+                    "The identity key for user ${mismatch.peerUid} has changed.\n\n" +
+                    "Previous fingerprint: ${mismatch.storedIdentityFingerprint}\n" +
+                    "New fingerprint: ${mismatch.newIdentityFingerprint}\n\n" +
+                    "This may indicate that the user reinstalled the app or an attacker is intercepting the connection. " +
+                    "Do you want to trust the new identity and reset the encrypted session?"
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        chatViewModel.acceptIdentityChangeAndResetSession(mismatch.peerUid)
+                    }
+                ) {
+                    Text("Trust & Reset Session")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        chatViewModel.clearIdentityMismatch()
+                    }
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 
     LaunchedEffect(Unit) {

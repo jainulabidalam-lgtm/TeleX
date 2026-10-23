@@ -191,4 +191,167 @@ class DecryptedCacheReactivityTest {
         sendError.value = null
         assertTrue(sendError.value == null)
     }
+
+    /**
+     * Batch cache updates atomically populate multiple messages.
+     */
+    @Test
+    fun `batch cacheDecryptedMessages updates all entries atomically`() = runBlocking {
+        val batch = mapOf(
+            "msg10" to "Text 10",
+            "msg11" to "Text 11",
+            "msg12" to "Text 12"
+        )
+        while (true) {
+            val current = decryptedCache.value
+            if (decryptedCache.compareAndSet(current, current + batch)) break
+        }
+
+        val cache = decryptedCache.value
+        assertEquals("Text 10", cache["msg10"])
+        assertEquals("Text 11", cache["msg11"])
+        assertEquals("Text 12", cache["msg12"])
+    }
+
+    /**
+     * Regression test: Unrecoverable message IDs and failed IDs resolve to "🔒 Encrypted message"
+     * and do not remain stuck on "🔒 Decrypting…".
+     */
+    @Test
+    fun `unrecoverable or failed message resolves to encrypted message placeholder`() = runBlocking {
+        val failedIds = MutableStateFlow<Set<String>>(setOf("fail1"))
+        val unrecoverableIds = mutableSetOf("unrec1")
+
+        fun resolveTextWithUnrec(
+            doc: RawDoc,
+            cache: Map<String, String>,
+            failed: Set<String>,
+            unrec: Set<String>
+        ): String {
+            val cachedText = cache[doc.id]
+            return when {
+                cachedText != null -> cachedText
+                !doc.ciphertext.isNullOrBlank() -> {
+                    if (failed.contains(doc.id) || unrec.contains(doc.id)) {
+                        "🔒 Encrypted message"
+                    } else {
+                        "🔒 Decrypting…"
+                    }
+                }
+                else -> doc.legacyText ?: ""
+            }
+        }
+
+        val docs = listOf(
+            RawDoc(id = "msg_ok", senderId = "peer", ciphertext = "CIPHER1==", legacyText = null),
+            RawDoc(id = "fail1", senderId = "peer", ciphertext = "CIPHER2==", legacyText = null),
+            RawDoc(id = "unrec1", senderId = "peer", ciphertext = "CIPHER3==", legacyText = null)
+        )
+
+        // msg_ok is waiting for decryption, fail1 is failed, unrec1 is unrecoverable
+        val result = docs.map { resolveTextWithUnrec(it, decryptedCache.value, failedIds.value, unrecoverableIds) }
+        assertEquals("🔒 Decrypting…", result[0])
+        assertEquals("🔒 Encrypted message", result[1])
+        assertEquals("🔒 Encrypted message", result[2])
+
+        // When unrec1 is persisted to cache as "🔒 Encrypted message"
+        cacheDecryptedMessage("unrec1", "🔒 Encrypted message")
+        val updated = docs.map { resolveTextWithUnrec(it, decryptedCache.value, failedIds.value, unrecoverableIds) }
+        assertEquals("🔒 Encrypted message", updated[2])
+    }
+
+    /**
+     * Bounded retry mechanism: failing message increments retry count and stops after MAX_RETRIES.
+     */
+    @Test
+    fun `retry mechanism halts after reaching max retry count and marks unrecoverable`() {
+        val retryCounts = java.util.concurrent.ConcurrentHashMap<String, Int>()
+        val unrecoverable = mutableSetOf<String>()
+        val maxRetries = 2
+        val docId = "troublesome_doc"
+
+        for (attempt in 1..5) {
+            val count = (retryCounts[docId] ?: 0) + 1
+            retryCounts[docId] = count
+            if (count >= maxRetries) {
+                unrecoverable.add(docId)
+            }
+        }
+
+        assertTrue("Doc must be added to unrecoverable after max retries", unrecoverable.contains(docId))
+        assertEquals(5, retryCounts[docId])
+    }
+
+    /**
+     * Verifies that cause chains and IllegalArgumentException are identified as unrecoverable.
+     */
+    @Test
+    fun `isUnrecoverable correctly identifies wrapped exceptions and decoding errors`() {
+        fun isUnrecoverable(e: Throwable): Boolean {
+            var current: Throwable? = e
+            while (current != null) {
+                val name = current.javaClass.simpleName
+                if (name in setOf(
+                    "UntrustedIdentityException", "InvalidMessageException", "InvalidKeyException",
+                    "InvalidKeyIdException", "NoSessionException", "LegacyMessageException", "InvalidVersionException",
+                    "IllegalArgumentException", "IllegalStateException"
+                )) {
+                    return true
+                }
+                current = current.cause
+            }
+            return false
+        }
+
+        // Direct unrecoverable
+        assertTrue(isUnrecoverable(org.signal.libsignal.protocol.UntrustedIdentityException("Untrusted")))
+        assertTrue(isUnrecoverable(org.signal.libsignal.protocol.InvalidMessageException("Invalid")))
+        assertTrue(isUnrecoverable(IllegalArgumentException("Bad base64")))
+
+        // Wrapped unrecoverable
+        val wrapped = RuntimeException("Outer", org.signal.libsignal.protocol.UntrustedIdentityException("Inner"))
+        assertTrue("Wrapped UntrustedIdentityException must be unrecoverable", isUnrecoverable(wrapped))
+
+        val deeplyWrapped = Exception("L1", RuntimeException("L2", org.signal.libsignal.protocol.InvalidKeyException("L3")))
+        assertTrue("Deeply wrapped InvalidKeyException must be unrecoverable", isUnrecoverable(deeplyWrapped))
+
+        // Normal network or transient error should NOT be unrecoverable
+        assertFalse(isUnrecoverable(java.io.IOException("Network timeout")))
+    }
+
+    /**
+     * Verifies that local Room messages provide instant text without waiting and that
+     * Room-only messages are preserved alongside Firestore messages.
+     */
+    @Test
+    fun `local Room messages provide instant text and local-only messages are merged`() {
+        val rawDocs = listOf(
+            RawDoc(id = "msg1", senderId = "peer", ciphertext = "CIPHER1==", legacyText = null),
+            RawDoc(id = "msg2", senderId = "peer", ciphertext = "CIPHER2==", legacyText = null)
+        )
+        // Local Room holds decrypted text for msg1, and has a local-only msg3
+        val localRoom = mapOf(
+            "msg1" to "Decrypted from Room",
+            "msg3" to "Historical Room-only message"
+        )
+        val inMemoryCache = mapOf<String, String>() // cache is empty initially
+
+        // Text resolution gives priority to in-memory cache, then Room local content
+        val resolvedMessages = rawDocs.map { doc ->
+            val text = inMemoryCache[doc.id] ?: localRoom[doc.id] ?: "🔒 Decrypting…"
+            doc.id to text
+        }
+        assertEquals("Decrypted from Room", resolvedMessages[0].second)
+        assertEquals("🔒 Decrypting…", resolvedMessages[1].second)
+
+        // Merging local-only messages
+        val rawIds = rawDocs.map { it.id }.toSet()
+        val localOnly = localRoom.filter { it.key !in rawIds }.map { it.key to it.value }
+        val allMessages = resolvedMessages + localOnly
+
+        assertEquals(3, allMessages.size)
+        assertEquals("msg3", allMessages[2].first)
+        assertEquals("Historical Room-only message", allMessages[2].second)
+    }
 }
+

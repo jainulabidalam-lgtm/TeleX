@@ -2,7 +2,6 @@ package com.e2eechat.app.crypto
 
 import android.content.Context
 import android.content.SharedPreferences
-import android.util.Base64
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import org.signal.libsignal.protocol.IdentityKey
@@ -34,10 +33,12 @@ import java.util.UUID
  * Scoped per user identity (UID / email prefix) to prevent cross-account key contamination.
  */
 class KeystoreSignalProtocolStore(
-    context: Context,
+    context: Context? = null,
     private val userIdentifier: String,
     private val identityKeyPair: IdentityKeyPair,
-    private val localRegistrationId: Int
+    private val localRegistrationId: Int,
+    prefsOverride: SharedPreferences? = null,
+    private val onPreKeyRemoved: ((Int) -> Unit)? = null
 ) : SignalProtocolStore {
 
     companion object {
@@ -47,16 +48,21 @@ class KeystoreSignalProtocolStore(
             "${PREFS_FILE_PREFIX}${userIdentifier.trim().lowercase().replace(Regex("[^a-z0-9_]"), "_")}"
     }
 
-    private val masterKey: MasterKey = MasterKey.Builder(context.applicationContext)
-        .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-        .build()
+    private val masterKey: MasterKey by lazy {
+        val ctx = context ?: throw IllegalStateException("Context required when prefsOverride is null")
+        MasterKey.Builder(ctx.applicationContext)
+            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+            .build()
+    }
 
-    private val prefs: SharedPreferences = try {
-        createPrefs(context)
+    private val prefs: SharedPreferences = prefsOverride ?: try {
+        val ctx = context ?: throw IllegalStateException("Context required when prefsOverride is null")
+        createPrefs(ctx)
     } catch (e: Exception) {
         // Recovery in case of Keystore corruption/inconsistency
-        context.applicationContext.deleteSharedPreferences(getStoreName(userIdentifier))
-        createPrefs(context)
+        android.util.Log.w("TeleXE2EE", "Signal store prefs error - store WIPED for $userIdentifier")
+        context?.applicationContext?.deleteSharedPreferences(getStoreName(userIdentifier))
+        createPrefs(context ?: throw IllegalStateException("Context required when prefsOverride is null"))
     }
 
     private fun createPrefs(context: Context): SharedPreferences {
@@ -85,15 +91,16 @@ class KeystoreSignalProtocolStore(
     ): IdentityKeyStore.IdentityChange {
         val key = k("identity", address.name)
         val existingBase64 = prefs.getString(key, null)
-        val newBase64 = Base64.encodeToString(identityKey.serialize(), Base64.NO_WRAP)
+        val newBase64 = Base64Compat.encodeToString(identityKey.serialize())
 
         return if (existingBase64 == null) {
-            prefs.edit().putString(key, newBase64).apply()
+            prefs.edit().putString(key, newBase64).commit()
             IdentityKeyStore.IdentityChange.NEW_OR_UNCHANGED
         } else if (existingBase64 == newBase64) {
             IdentityKeyStore.IdentityChange.NEW_OR_UNCHANGED
         } else {
-            prefs.edit().putString(key, newBase64).apply()
+            SafeLog.w("TeleXE2EE", "Identity for ${address.name} REPLACED old=${identityFingerprint(getIdentity(address))} new=${identityFingerprint(identityKey)}")
+            prefs.edit().putString(key, newBase64).commit()
             deleteSession(address)
             IdentityKeyStore.IdentityChange.REPLACED_EXISTING
         }
@@ -105,13 +112,13 @@ class KeystoreSignalProtocolStore(
         direction: IdentityKeyStore.Direction
     ): Boolean {
         val trusted = getIdentity(address)
-        return trusted == null || trusted == identityKey || direction == IdentityKeyStore.Direction.SENDING
+        return trusted == null || trusted == identityKey
     }
 
     override fun getIdentity(address: SignalProtocolAddress): IdentityKey? {
         val base64 = prefs.getString(k("identity", address.name), null) ?: return null
         return try {
-            IdentityKey(Base64.decode(base64, Base64.NO_WRAP))
+            IdentityKey(Base64Compat.decode(base64))
         } catch (e: Exception) {
             null
         }
@@ -125,15 +132,15 @@ class KeystoreSignalProtocolStore(
         val base64 = prefs.getString(k("prekey", preKeyId.toString()), null)
             ?: throw InvalidKeyIdException("No such prekey: $preKeyId")
         return try {
-            PreKeyRecord(Base64.decode(base64, Base64.NO_WRAP))
+            PreKeyRecord(Base64Compat.decode(base64))
         } catch (e: Exception) {
             throw InvalidKeyIdException("Corrupted prekey: $preKeyId")
         }
     }
 
     override fun storePreKey(preKeyId: Int, record: PreKeyRecord) {
-        val base64 = Base64.encodeToString(record.serialize(), Base64.NO_WRAP)
-        prefs.edit().putString(k("prekey", preKeyId.toString()), base64).apply()
+        val base64 = Base64Compat.encodeToString(record.serialize())
+        prefs.edit().putString(k("prekey", preKeyId.toString()), base64).commit()
     }
 
     override fun containsPreKey(preKeyId: Int): Boolean {
@@ -141,7 +148,8 @@ class KeystoreSignalProtocolStore(
     }
 
     override fun removePreKey(preKeyId: Int) {
-        prefs.edit().remove(k("prekey", preKeyId.toString())).apply()
+        prefs.edit().remove(k("prekey", preKeyId.toString())).commit()
+        onPreKeyRemoved?.invoke(preKeyId)
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -152,7 +160,7 @@ class KeystoreSignalProtocolStore(
         val base64 = prefs.getString(k("signed_prekey", signedPreKeyId.toString()), null)
             ?: throw InvalidKeyIdException("No such signed prekey: $signedPreKeyId")
         return try {
-            SignedPreKeyRecord(Base64.decode(base64, Base64.NO_WRAP))
+            SignedPreKeyRecord(Base64Compat.decode(base64))
         } catch (e: Exception) {
             throw InvalidKeyIdException("Corrupted signed prekey: $signedPreKeyId")
         }
@@ -164,7 +172,7 @@ class KeystoreSignalProtocolStore(
         for ((key, value) in prefs.all) {
             if (key.startsWith(prefix) && value is String) {
                 try {
-                    results.add(SignedPreKeyRecord(Base64.decode(value, Base64.NO_WRAP)))
+                    results.add(SignedPreKeyRecord(Base64Compat.decode(value)))
                 } catch (_: Exception) {}
             }
         }
@@ -172,8 +180,8 @@ class KeystoreSignalProtocolStore(
     }
 
     override fun storeSignedPreKey(signedPreKeyId: Int, record: SignedPreKeyRecord) {
-        val base64 = Base64.encodeToString(record.serialize(), Base64.NO_WRAP)
-        prefs.edit().putString(k("signed_prekey", signedPreKeyId.toString()), base64).apply()
+        val base64 = Base64Compat.encodeToString(record.serialize())
+        prefs.edit().putString(k("signed_prekey", signedPreKeyId.toString()), base64).commit()
     }
 
     override fun containsSignedPreKey(signedPreKeyId: Int): Boolean {
@@ -181,7 +189,7 @@ class KeystoreSignalProtocolStore(
     }
 
     override fun removeSignedPreKey(signedPreKeyId: Int) {
-        prefs.edit().remove(k("signed_prekey", signedPreKeyId.toString())).apply()
+        prefs.edit().remove(k("signed_prekey", signedPreKeyId.toString())).commit()
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -192,7 +200,7 @@ class KeystoreSignalProtocolStore(
         val base64 = prefs.getString(k("kyber_prekey", kyberPreKeyId.toString()), null)
             ?: throw InvalidKeyIdException("No such Kyber prekey: $kyberPreKeyId")
         return try {
-            KyberPreKeyRecord(Base64.decode(base64, Base64.NO_WRAP))
+            KyberPreKeyRecord(Base64Compat.decode(base64))
         } catch (e: Exception) {
             throw InvalidKeyIdException("Corrupted Kyber prekey: $kyberPreKeyId")
         }
@@ -204,7 +212,7 @@ class KeystoreSignalProtocolStore(
         for ((key, value) in prefs.all) {
             if (key.startsWith(prefix) && value is String) {
                 try {
-                    results.add(KyberPreKeyRecord(Base64.decode(value, Base64.NO_WRAP)))
+                    results.add(KyberPreKeyRecord(Base64Compat.decode(value)))
                 } catch (_: Exception) {}
             }
         }
@@ -212,8 +220,8 @@ class KeystoreSignalProtocolStore(
     }
 
     override fun storeKyberPreKey(kyberPreKeyId: Int, record: KyberPreKeyRecord) {
-        val base64 = Base64.encodeToString(record.serialize(), Base64.NO_WRAP)
-        prefs.edit().putString(k("kyber_prekey", kyberPreKeyId.toString()), base64).apply()
+        val base64 = Base64Compat.encodeToString(record.serialize())
+        prefs.edit().putString(k("kyber_prekey", kyberPreKeyId.toString()), base64).commit()
     }
 
     override fun containsKyberPreKey(kyberPreKeyId: Int): Boolean {
@@ -227,7 +235,7 @@ class KeystoreSignalProtocolStore(
     ) {
         val usedKey = k("kyber_used", kyberPreKeyId.toString())
         val baseKeysKey = k("kyber_base_keys", "${kyberPreKeyId}_$signedPreKeyId")
-        val baseKeyBase64 = Base64.encodeToString(baseKey.serialize(), Base64.NO_WRAP)
+        val baseKeyBase64 = Base64Compat.encodeToString(baseKey.serialize())
 
         val existingSet = prefs.getStringSet(baseKeysKey, emptySet())?.toMutableSet() ?: mutableSetOf()
         if (existingSet.contains(baseKeyBase64)) {
@@ -238,7 +246,7 @@ class KeystoreSignalProtocolStore(
         prefs.edit()
             .putBoolean(usedKey, true)
             .putStringSet(baseKeysKey, existingSet)
-            .apply()
+            .commit()
     }
 
     fun hasKyberPreKeyBeenUsed(kyberPreKeyId: Int): Boolean {
@@ -256,7 +264,7 @@ class KeystoreSignalProtocolStore(
         val base64 = prefs.getString(sessionKey(address), null)
         return if (base64 != null) {
             try {
-                SessionRecord(Base64.decode(base64, Base64.NO_WRAP))
+                SessionRecord(Base64Compat.decode(base64))
             } catch (e: Exception) {
                 SessionRecord()
             }
@@ -273,7 +281,7 @@ class KeystoreSignalProtocolStore(
             val base64 = prefs.getString(sessionKey(addr), null)
             if (base64 != null) {
                 try {
-                    list.add(SessionRecord(Base64.decode(base64, Base64.NO_WRAP)))
+                    list.add(SessionRecord(Base64Compat.decode(base64)))
                 } catch (_: Exception) {}
             }
         }
@@ -293,8 +301,8 @@ class KeystoreSignalProtocolStore(
     }
 
     override fun storeSession(address: SignalProtocolAddress, record: SessionRecord) {
-        val base64 = Base64.encodeToString(record.serialize(), Base64.NO_WRAP)
-        prefs.edit().putString(sessionKey(address), base64).apply()
+        val base64 = Base64Compat.encodeToString(record.serialize())
+        prefs.edit().putString(sessionKey(address), base64).commit()
     }
 
     override fun containsSession(address: SignalProtocolAddress): Boolean {
@@ -302,7 +310,7 @@ class KeystoreSignalProtocolStore(
     }
 
     override fun deleteSession(address: SignalProtocolAddress) {
-        prefs.edit().remove(sessionKey(address)).apply()
+        prefs.edit().remove(sessionKey(address)).commit()
     }
 
     override fun deleteAllSessions(name: String) {
@@ -313,7 +321,50 @@ class KeystoreSignalProtocolStore(
                 editor.remove(key)
             }
         }
-        editor.apply()
+        editor.commit()
+    }
+
+    /**
+     * Checks if a locally stored session is structurally valid:
+     * - Must exist in storage.
+     * - Must have an active sender chain (able to encrypt outgoing messages).
+     * - Local identity key must match current local identity key.
+     * - Remote identity key must match current trusted identity for this address.
+     */
+    fun isSessionValid(address: SignalProtocolAddress): Boolean {
+        if (!containsSession(address)) return false
+        return try {
+            val session = loadSession(address)
+            if (!session.hasSenderChain()) return false
+
+            val localId = session.localIdentityKey
+            if (localId != null && localId != identityKeyPair.publicKey) {
+                return false
+            }
+
+            val remoteId = session.remoteIdentityKey
+            val trustedId = getIdentity(address)
+            if (remoteId != null && trustedId != null && remoteId != trustedId) {
+                return false
+            }
+
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Retrieves the peer's registration ID recorded in this session, if any.
+     */
+    fun getSessionRemoteRegistrationId(address: SignalProtocolAddress): Int? {
+        if (!containsSession(address)) return null
+        return try {
+            val regId = loadSession(address).remoteRegistrationId
+            if (regId != 0) regId else null
+        } catch (_: Exception) {
+            null
+        }
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -328,7 +379,7 @@ class KeystoreSignalProtocolStore(
         distributionId: UUID,
         record: SenderKeyRecord
     ) {
-        val base64 = Base64.encodeToString(record.serialize(), Base64.NO_WRAP)
+        val base64 = Base64Compat.encodeToString(record.serialize())
         prefs.edit().putString(senderKeyKey(address, distributionId), base64).apply()
     }
 
@@ -338,7 +389,7 @@ class KeystoreSignalProtocolStore(
     ): SenderKeyRecord? {
         val base64 = prefs.getString(senderKeyKey(address, distributionId), null) ?: return null
         return try {
-            SenderKeyRecord(Base64.decode(base64, Base64.NO_WRAP))
+            SenderKeyRecord(Base64Compat.decode(base64))
         } catch (e: Exception) {
             null
         }
