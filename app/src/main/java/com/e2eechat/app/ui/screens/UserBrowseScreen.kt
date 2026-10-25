@@ -13,8 +13,12 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.e2eechat.app.ui.theme.*
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.tasks.await
@@ -54,14 +58,28 @@ fun UserBrowseScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("New Chat") },
+                title = {
+                    Text(
+                        text = "New Chat",
+                        style = Typography.titleLarge.copy(fontWeight = FontWeight.SemiBold),
+                        color = TeleXTextPrimary
+                    )
+                },
                 navigationIcon = {
                     IconButton(onClick = onBackClick) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back",
+                            tint = TeleXTextPrimary
+                        )
                     }
-                }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = TeleXBackground
+                )
             )
-        }
+        },
+        containerColor = TeleXBackground
     ) { padding ->
         Box(
             modifier = Modifier
@@ -70,17 +88,35 @@ fun UserBrowseScreen(
         ) {
             when {
                 isLoading -> {
-                    CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
-                }
-                users.isEmpty() -> {
-                    Text(
-                        text = "No other users yet",
+                    CircularProgressIndicator(
                         modifier = Modifier.align(Alignment.Center),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = TeleXPrimary
                     )
                 }
+                users.isEmpty() -> {
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = "No other users yet",
+                            style = Typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                            color = TeleXTextPrimary
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "When other users sign up, they will appear here.",
+                            style = Typography.bodyMedium,
+                            color = TeleXTextSecondary
+                        )
+                    }
+                }
                 else -> {
-                    LazyColumn {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize()
+                    ) {
                         items(users) { user ->
                             Row(
                                 modifier = Modifier
@@ -93,25 +129,54 @@ fun UserBrowseScreen(
                                     modifier = Modifier
                                         .size(48.dp)
                                         .clip(CircleShape)
-                                        .background(MaterialTheme.colorScheme.surfaceVariant),
+                                        .background(TeleXPrimaryContainer),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     if (user.profilePictureUrl != null) {
                                         AsyncImage(
-                                            model = user.profilePictureUrl,
+                                            model = coil.request.ImageRequest.Builder(androidx.compose.ui.platform.LocalContext.current)
+                                                .data(user.profilePictureUrl)
+                                                .size(96)
+                                                .crossfade(150)
+                                                .memoryCacheKey("avatar_${user.uid}")
+                                                .build(),
                                             contentDescription = null,
+                                            contentScale = ContentScale.Crop,
                                             modifier = Modifier.fillMaxSize()
                                         )
                                     } else {
-                                        Text(user.username.take(2).uppercase())
+                                        Text(
+                                            text = user.username.take(2).uppercase(),
+                                            style = Typography.titleMedium.copy(
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 16.sp
+                                            ),
+                                            color = TeleXPrimaryDeep
+                                        )
                                     }
                                 }
+
                                 Spacer(modifier = Modifier.width(14.dp))
-                                Text(
-                                    text = user.username,
-                                    style = MaterialTheme.typography.titleMedium
-                                )
+
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = user.username,
+                                        style = Typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                                        color = TeleXTextPrimary
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = "Available to chat",
+                                        style = Typography.bodySmall,
+                                        color = TeleXTextSecondary
+                                    )
+                                }
                             }
+                            HorizontalDivider(
+                                modifier = Modifier.padding(start = 78.dp, end = 16.dp),
+                                thickness = 0.5.dp,
+                                color = TeleXDivider
+                            )
                         }
                     }
                 }

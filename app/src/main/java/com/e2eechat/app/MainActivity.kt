@@ -10,8 +10,14 @@ import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -46,7 +52,7 @@ sealed class Screen {
     object UserBrowse : Screen()
     object UsernameDob : Screen()
     object ProfilePicture : Screen()
-    data class ChatDetail(val chatId: String) : Screen()
+    data class ChatDetail(val chatId: String, val contactName: String = "") : Screen()
 }
 
 class MainActivity : ComponentActivity() {
@@ -96,12 +102,70 @@ fun E2EEChatApp(
     val chatViewModel: ChatViewModel = viewModel()
     val authViewModel: AuthViewModel = viewModel()
     val chatsState by chatViewModel.chats.collectAsStateWithLifecycle(emptyList())
+    val snackbarHostState = remember { SnackbarHostState() }
+    val sendError by chatViewModel.sendError.collectAsStateWithLifecycle()
+    val identityMismatch by chatViewModel.identityMismatch.collectAsStateWithLifecycle()
+
+    // Show a Snackbar whenever a send error occurs, then auto-clear it
+    LaunchedEffect(sendError) {
+        val err = sendError
+        if (!err.isNullOrBlank()) {
+            snackbarHostState.showSnackbar(err)
+            chatViewModel.clearSendError()
+        }
+    }
+
+    // Explicit re-verification / recovery dialog when an identity change is detected
+    identityMismatch?.let { mismatch ->
+        AlertDialog(
+            onDismissRequest = { chatViewModel.clearIdentityMismatch() },
+            title = { Text("Security Alert: Safety Number Changed") },
+            text = {
+                Text(
+                    "The identity key for user ${mismatch.peerUid} has changed.\n\n" +
+                    "Previous fingerprint: ${mismatch.storedIdentityFingerprint}\n" +
+                    "New fingerprint: ${mismatch.newIdentityFingerprint}\n\n" +
+                    "This may indicate that the user reinstalled the app or an attacker is intercepting the connection. " +
+                    "Do you want to trust the new identity and reset the encrypted session?"
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        chatViewModel.acceptIdentityChangeAndResetSession(mismatch.peerUid)
+                    }
+                ) {
+                    Text("Trust & Reset Session")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        chatViewModel.clearIdentityMismatch()
+                    }
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
 
     LaunchedEffect(Unit) {
         val loggedIn = prefs.isLoggedIn.first()
         val email = prefs.userEmail.first()
+        val user = FirebaseAuth.getInstance().currentUser
+        val uid = user?.uid?.trim().orEmpty()
         if (loggedIn && !email.isNullOrBlank()) {
-            keys.ensureKeysForUser(email)
+            if (uid.isNotBlank()) {
+                val keyRes = keys.ensureKeysForUser(userIdentifier = uid, fallbackIdentifier = email)
+                try {
+                    keys.publishPublicPreKeyBundle(uid, keyRes)
+                } catch (e: Exception) {
+                    android.util.Log.e("MainActivity", "Failed to sync prekey bundle to Firestore on startup for uid: $uid", e)
+                }
+            } else {
+                android.util.Log.e("MainActivity", "Firebase UID is blank on startup, cannot sync prekey bundle")
+            }
             loggedInUserEmail = email
             currentScreen = Screen.ChatList
         } else {
@@ -115,6 +179,10 @@ fun E2EEChatApp(
 
     val activeScreen = currentScreen ?: return
 
+    Scaffold(
+        snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
+        containerColor = MaterialTheme.colorScheme.background
+    ) { _ ->
     // Transition animations: subtle smooth slide & fade
     AnimatedContent(
         targetState = activeScreen,
@@ -150,15 +218,26 @@ fun E2EEChatApp(
                 LoginScreen(
                     authViewModel = authViewModel,
                     onLoginSuccess = {
-                        val email = FirebaseAuth.getInstance().currentUser?.email ?: ""
                         coroutineScope.launch {
-                            if (email.isNotBlank()) {
-                                keys.ensureKeysForUser(email)
+                            val user = FirebaseAuth.getInstance().currentUser
+                            val email = user?.email?.trim().orEmpty()
+                            val uid = user?.uid?.trim().orEmpty()
+                            if (email.isBlank() || uid.isBlank()) {
+                                android.util.Log.e("MainActivity", "Cannot publish prekeys on login: blank email or UID (email='$email', uid='$uid')")
+                                snackbarHostState.showSnackbar("Login failed: missing user credentials. Please try again.")
+                                return@launch
+                            }
+                            try {
+                                val keyRes = keys.ensureKeysForUser(userIdentifier = uid, fallbackIdentifier = email)
+                                keys.publishPublicPreKeyBundle(uid, keyRes)
                                 prefs.saveLoginState(email = email, isLoggedIn = true)
+                                loggedInUserEmail = email
+                                currentScreen = Screen.ChatList
+                            } catch (e: Exception) {
+                                android.util.Log.e("MainActivity", "Failed to publish prekeys on login for uid: $uid", e)
+                                snackbarHostState.showSnackbar("Failed to publish encryption keys: ${e.localizedMessage ?: "Network error"}. Please try again.")
                             }
                         }
-                        loggedInUserEmail = email
-                        currentScreen = Screen.ChatList
                     },
                     onNeedsOnboarding = {
                         currentScreen = Screen.UsernameDob
@@ -178,15 +257,26 @@ fun E2EEChatApp(
                 ProfilePictureScreen(
                     onDone = { uri ->
                         authViewModel.uploadProfilePictureAndFinish(uri, context) {
-                            val email = FirebaseAuth.getInstance().currentUser?.email ?: ""
                             coroutineScope.launch {
-                                if (email.isNotBlank()) {
-                                    keys.ensureKeysForUser(email)
+                                val user = FirebaseAuth.getInstance().currentUser
+                                val email = user?.email?.trim().orEmpty()
+                                val uid = user?.uid?.trim().orEmpty()
+                                if (email.isBlank() || uid.isBlank()) {
+                                    android.util.Log.e("MainActivity", "Cannot complete onboarding: authenticated user has blank email or UID (email='$email', uid='$uid')")
+                                    snackbarHostState.showSnackbar("Profile setup error: missing user credentials. Please try again.")
+                                    return@launch
+                                }
+                                try {
+                                    val keyRes = keys.ensureKeysForUser(userIdentifier = uid, fallbackIdentifier = email)
+                                    keys.publishPublicPreKeyBundle(uid, keyRes)
                                     prefs.saveLoginState(email = email, isLoggedIn = true)
+                                    loggedInUserEmail = email
+                                    currentScreen = Screen.ChatList
+                                } catch (e: Exception) {
+                                    android.util.Log.e("MainActivity", "Failed to publish Signal prekeys on onboarding finish for uid: $uid", e)
+                                    snackbarHostState.showSnackbar("Failed to publish encryption keys: ${e.localizedMessage ?: "Network error"}. Please tap to retry.")
                                 }
                             }
-                            loggedInUserEmail = email
-                            currentScreen = Screen.ChatList
                         }
                     }
                 )
@@ -196,7 +286,8 @@ fun E2EEChatApp(
                     chats = chatsState,
                     onChatSelected = { chatId ->
                         chatViewModel.markChatRead(chatId)
-                        currentScreen = Screen.ChatDetail(chatId)
+                        val chatName = chatsState.firstOrNull { it.id == chatId }?.contactName ?: ""
+                        currentScreen = Screen.ChatDetail(chatId, chatName)
                     },
                     onNewChatClick = {
                         currentScreen = Screen.UserBrowse
@@ -225,7 +316,7 @@ fun E2EEChatApp(
                     onUserSelected = { user ->
                         val myUid = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: ""
                         chatViewModel.createOrGetChatWithUser(user.uid, user.username, myUid) { chatId ->
-                            currentScreen = Screen.ChatDetail(chatId)
+                            currentScreen = Screen.ChatDetail(chatId, user.username)
                         }
                     }
                 )
@@ -234,38 +325,37 @@ fun E2EEChatApp(
                 val currentChat = chatsState.firstOrNull { it.id == targetScreen.chatId }
                 val messages by chatViewModel.messagesForChat(targetScreen.chatId)
                     .collectAsStateWithLifecycle(emptyList())
-                if (currentChat != null) {
-                    ChatScreen(
-                        chat = currentChat.copy(messages = messages),
-                        onBackClick = {
-                            currentScreen = Screen.ChatList
-                        },
-                        onSendMessage = { text ->
-                            val currentTime = SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date())
-                            chatViewModel.sendMessage(
-                                targetScreen.chatId,
-                                Message(
-                                    id = "msg_${System.currentTimeMillis()}",
-                                    senderId = loggedInUserEmail ?: "me",
-                                    text = text,
-                                    timestamp = currentTime,
-                                    isFromMe = true,
-                                    status = MessageStatus.READ
-                                )
-                            )
-                        },
-                        onSendImage = { uri ->
-                            val currentTime = java.text.SimpleDateFormat("hh:mm a", java.util.Locale.getDefault()).format(java.util.Date())
-                            chatViewModel.uploadImageAndSend(
-                                targetScreen.chatId,
-                                uri,
-                                loggedInUserEmail ?: "me",
-                                currentTime
-                            )
-                        }
-                    )
-                }
+                val displayChat = currentChat ?: Chat(
+                    id = targetScreen.chatId,
+                    contactName = targetScreen.contactName.ifBlank { "Chat" },
+                    avatarInitials = targetScreen.contactName.take(2).uppercase().ifBlank { "?" },
+                    avatarColorHex = 0xFF6E56CFL,
+                    isOnline = false,
+                    lastSeenText = "",
+                    lastMessage = "",
+                    lastMessageTimestamp = "",
+                    unreadCount = 0
+                )
+                ChatScreen(
+                    chat = displayChat.copy(messages = messages),
+                    onBackClick = {
+                        currentScreen = Screen.ChatList
+                    },
+                    onSendMessage = { text ->
+                        chatViewModel.sendTextMessage(targetScreen.chatId, text)
+                    },
+                    onSendImage = { uri ->
+                        val currentTime = java.text.SimpleDateFormat("hh:mm a", java.util.Locale.getDefault()).format(java.util.Date())
+                        chatViewModel.uploadImageAndSend(
+                            targetScreen.chatId,
+                            uri,
+                            loggedInUserEmail ?: "me",
+                            currentTime
+                        )
+                    }
+                )
             }
         }
     }
+    } // end Scaffold
 }
