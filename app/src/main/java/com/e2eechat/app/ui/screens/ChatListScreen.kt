@@ -32,7 +32,8 @@ fun ChatListScreen(
     chats: List<Chat>,
     onChatSelected: (String) -> Unit,
     onNewChatClick: () -> Unit,
-    onSettingsClick: () -> Unit = {}
+    onSettingsClick: () -> Unit = {},
+    onSearchClick: () -> Unit = onNewChatClick
 ) {
     Scaffold(
         topBar = {
@@ -45,7 +46,7 @@ fun ChatListScreen(
                     )
                 },
                 actions = {
-                    IconButton(onClick = { /* Search preview */ }) {
+                    IconButton(onClick = onSearchClick) {
                         Icon(
                             imageVector = Icons.Outlined.Search,
                             contentDescription = "Search",

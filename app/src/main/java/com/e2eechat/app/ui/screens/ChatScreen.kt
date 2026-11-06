@@ -5,6 +5,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -26,12 +29,17 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
 import com.e2eechat.app.model.Chat
 import com.e2eechat.app.model.Message
@@ -44,10 +52,20 @@ fun ChatScreen(
     chat: Chat,
     onBackClick: () -> Unit,
     onSendMessage: (String) -> Unit,
-    onSendImage: (Uri) -> Unit = {}
+    onSendImage: (Uri) -> Unit = {},
+    onImageClick: ((String) -> Unit)? = null
 ) {
     var inputText by remember { mutableStateOf("") }
+    var viewingImageUrl by remember { mutableStateOf<String?>(null) }
     val listState = rememberLazyListState()
+
+    val handleImageClick: (String) -> Unit = { url ->
+        if (onImageClick != null) {
+            onImageClick(url)
+        } else {
+            viewingImageUrl = url
+        }
+    }
 
     val imagePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -238,15 +256,26 @@ fun ChatScreen(
                 key = { _, msg -> msg.id },
                 contentType = { _, msg -> if (msg.imageUrl != null) "image" else "text" }
             ) { _, message ->
-                MessageBubble(message = message)
+                MessageBubble(
+                    message = message,
+                    onImageClick = handleImageClick
+                )
             }
         }
+    }
+
+    viewingImageUrl?.let { url ->
+        FullScreenImageViewer(
+            imageUrl = url,
+            onDismiss = { viewingImageUrl = null }
+        )
     }
 }
 
 @Composable
 private fun MessageBubble(
-    message: Message
+    message: Message,
+    onImageClick: (String) -> Unit = {}
 ) {
     val isFromMe = message.isFromMe
 
@@ -303,6 +332,7 @@ private fun MessageBubble(
                             .widthIn(max = 260.dp)
                             .heightIn(max = 260.dp)
                             .clip(RoundedCornerShape(12.dp))
+                            .clickable { onImageClick(message.imageUrl) }
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                 }
@@ -336,6 +366,96 @@ private fun MessageBubble(
                             modifier = Modifier.size(14.dp)
                         )
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun FullScreenImageViewer(
+    imageUrl: String,
+    onDismiss: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
+    ) {
+        var scale by remember { mutableFloatStateOf(1f) }
+        var offset by remember { mutableStateOf(Offset.Zero) }
+
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+        ) {
+            AsyncImage(
+                model = coil.request.ImageRequest.Builder(androidx.compose.ui.platform.LocalContext.current)
+                    .data(imageUrl)
+                    .crossfade(200)
+                    .build(),
+                contentDescription = "Full-screen photo",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(Unit) {
+                        detectTapGestures(
+                            onDoubleTap = {
+                                if (scale > 1f) {
+                                    scale = 1f
+                                    offset = Offset.Zero
+                                } else {
+                                    scale = 2.5f
+                                    offset = Offset.Zero
+                                }
+                            }
+                        )
+                    }
+                    .pointerInput(Unit) {
+                        detectTransformGestures { _, pan, zoom, _ ->
+                            val newScale = (scale * zoom).coerceIn(1f, 5f)
+                            scale = newScale
+                            if (newScale > 1f) {
+                                val maxOffset = 1500f * (newScale - 1f)
+                                offset = Offset(
+                                    x = (offset.x + pan.x).coerceIn(-maxOffset, maxOffset),
+                                    y = (offset.y + pan.y).coerceIn(-maxOffset, maxOffset)
+                                )
+                            } else {
+                                offset = Offset.Zero
+                            }
+                        }
+                    }
+                    .graphicsLayer {
+                        scaleX = scale
+                        scaleY = scale
+                        translationX = offset.x
+                        translationY = offset.y
+                    }
+            )
+
+            // Top Bar Overlay with Back/Close button
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .statusBarsPadding()
+                    .padding(horizontal = 12.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(
+                    onClick = onDismiss,
+                    modifier = Modifier
+                        .size(44.dp)
+                        .background(Color(0x66000000), CircleShape)
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Back",
+                        tint = Color.White
+                    )
                 }
             }
         }

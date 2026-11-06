@@ -54,7 +54,10 @@ class AuthViewModel : ViewModel() {
             val hasUsername = doc.exists() && !doc.getString("username").isNullOrBlank()
             authState.value = if (hasUsername) AuthState.Success else AuthState.NeedsOnboarding
         } catch (e: Exception) {
-            authState.value = AuthState.NeedsOnboarding
+            // For existing accounts where Firebase Auth succeeded, network or Firestore lookup
+            // failures must not block login or falsely redirect to onboarding.
+            android.util.Log.w("AuthViewModel", "Could not check profile completeness for uid=$uid: ${e.message}; defaulting to Success to restore existing account", e)
+            authState.value = AuthState.Success
         }
     }
 
@@ -63,7 +66,7 @@ class AuthViewModel : ViewModel() {
         viewModelScope.launch {
             try {
                 auth.createUserWithEmailAndPassword(email, password).await()
-                resolveNextState()
+                authState.value = AuthState.NeedsOnboarding
             } catch (e: Exception) {
                 authState.value = AuthState.Error(e.message ?: "Sign up failed")
             }
@@ -98,12 +101,24 @@ class AuthViewModel : ViewModel() {
         }
     }
 
+    companion object {
+        private const val MAX_PROFILE_IMAGE_SIZE = 5 * 1024 * 1024 // 5 MB
+        private val USERNAME_REGEX = Regex("^[a-z0-9_]{3,30}$")
+    }
+
     fun saveUsernameAndDob(username: String, dob: String, onDone: () -> Unit) {
         val uid = auth.currentUser?.uid ?: return
+        val cleanUsername = username.trim().lowercase()
+        if (!cleanUsername.matches(USERNAME_REGEX)) {
+            authState.value = AuthState.Error("Username must be 3-30 characters (letters, numbers, underscores)")
+            return
+        }
+        val cleanDob = dob.trim().take(20)
+
         viewModelScope.launch {
             try {
                 val existing = firestore.collection("users")
-                    .whereEqualTo("username", username)
+                    .whereEqualTo("username", cleanUsername)
                     .get().await()
                 val takenByOther = existing.documents.any { it.id != uid }
                 if (takenByOther) {
@@ -111,8 +126,8 @@ class AuthViewModel : ViewModel() {
                     return@launch
                 }
                 val data = hashMapOf(
-                    "username" to username,
-                    "dob" to dob,
+                    "username" to cleanUsername,
+                    "dob" to cleanDob,
                     "email" to (auth.currentUser?.email ?: "")
                 )
                 firestore.collection("users").document(uid).set(data).await()
@@ -128,10 +143,21 @@ class AuthViewModel : ViewModel() {
         viewModelScope.launch {
             try {
                 if (imageUri != null) {
-                    val inputStream = context.contentResolver.openInputStream(imageUri)
-                    val bytes = inputStream?.readBytes()
-                    inputStream?.close()
-                    if (bytes != null) {
+                    val bytes = context.contentResolver.openInputStream(imageUri)?.use { stream ->
+                        val buffer = java.io.ByteArrayOutputStream()
+                        val data = ByteArray(8192)
+                        var totalRead = 0
+                        var nRead: Int
+                        while (stream.read(data, 0, data.size).also { nRead = it } != -1) {
+                            totalRead += nRead
+                            if (totalRead > MAX_PROFILE_IMAGE_SIZE) {
+                                throw IllegalArgumentException("Profile picture exceeds 5MB size limit")
+                            }
+                            buffer.write(data, 0, nRead)
+                        }
+                        buffer.toByteArray()
+                    }
+                    if (bytes != null && bytes.isNotEmpty()) {
                         val fileName = "${uid}_${System.currentTimeMillis()}.jpg"
                         val bucket = supabase.storage.from("profile-pictures")
                         bucket.upload(fileName, bytes)

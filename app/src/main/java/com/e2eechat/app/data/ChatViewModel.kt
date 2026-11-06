@@ -5,6 +5,9 @@ import android.net.Uri
 import android.util.Base64
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.e2eechat.app.crypto.AttachmentAuthenticationException
+import com.e2eechat.app.crypto.AttachmentCrypto
+import com.e2eechat.app.crypto.AttachmentHashMismatchException
 import com.e2eechat.app.crypto.KeyManager
 import com.e2eechat.app.crypto.identityFingerprint
 import com.e2eechat.app.model.Chat
@@ -16,6 +19,8 @@ import com.google.firebase.firestore.Query
 import io.github.jan.supabase.createSupabaseClient
 import io.github.jan.supabase.storage.Storage
 import io.github.jan.supabase.storage.storage
+import java.io.File
+import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -102,8 +107,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val unrecoverableIds: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
     private val decryptionRetryCounts = ConcurrentHashMap<String, Int>()
 
+    /**
+     * Tracks message IDs currently being downloaded to prevent duplicate concurrent downloads.
+     * Access is synchronized via ConcurrentHashMap.newKeySet().
+     */
+    private val attachmentDownloadsInFlight: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
     companion object {
         private const val MAX_DECRYPTION_RETRIES = 2
+        private const val MAX_MESSAGE_TEXT_LENGTH = 5000
+        private const val MAX_CHAT_IMAGE_SIZE = 10 * 1024 * 1024 // 10 MB
     }
 
     private fun isUnrecoverable(e: Throwable): Boolean {
@@ -176,36 +189,53 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         sessionMutexes.getOrPut(uid) { Mutex() }
 
     val chats: Flow<List<Chat>> = callbackFlow {
-        if (myUid.isBlank()) {
-            trySend(emptyList())
-            awaitClose { }
-        } else {
-            val registration = firestore.collection("chats")
-                .whereArrayContains("participants", myUid)
-                .addSnapshotListener { snapshot, _ ->
-                    val mapped = snapshot?.documents?.mapNotNull { doc ->
-                        val participants = doc.get("participants") as? List<*> ?: return@mapNotNull null
-                        val otherUid = participants.map { it.toString() }.firstOrNull { it != myUid } ?: return@mapNotNull null
-                        val names = doc.get("participantNames") as? Map<*, *>
-                        val rawMillis = doc.getLong("lastMessageTimestamp") ?: 0L
-                        val lastMsgRaw = doc.getString("lastMessage") ?: ""
+        var registration: com.google.firebase.firestore.ListenerRegistration? = null
 
-                        val chat = Chat(
-                            id = doc.id,
-                            contactName = (names?.get(otherUid) as? String) ?: "Unknown",
-                            avatarInitials = ((names?.get(otherUid) as? String) ?: "??").take(2).uppercase(),
-                            avatarColorHex = 0xFF6E56CFL,
-                            isOnline = false,
-                            lastSeenText = "",
-                            lastMessage = lastMsgRaw,
-                            lastMessageTimestamp = formatTime(rawMillis),
-                            unreadCount = 0
-                        )
-                        rawMillis to chat
-                    }?.sortedByDescending { it.first }?.map { it.second } ?: emptyList()
-                    trySend(mapped)
-                }
-            awaitClose { registration.remove() }
+        val authListener = FirebaseAuth.AuthStateListener { firebaseAuth ->
+            val uid = firebaseAuth.currentUser?.uid?.trim().orEmpty()
+            registration?.remove()
+            registration = null
+
+            if (uid.isBlank()) {
+                trySend(emptyList())
+            } else {
+                registration = firestore.collection("chats")
+                    .whereArrayContains("participants", uid)
+                    .addSnapshotListener { snapshot, error ->
+                        if (error != null) {
+                            android.util.Log.e("ChatViewModel", "Error listening to chats for uid $uid", error)
+                            return@addSnapshotListener
+                        }
+                        val mapped = snapshot?.documents?.mapNotNull { doc ->
+                            val participants = doc.get("participants") as? List<*> ?: return@mapNotNull null
+                            val otherUid = participants.map { it.toString() }.firstOrNull { it != uid } ?: return@mapNotNull null
+                            val names = doc.get("participantNames") as? Map<*, *>
+                            val rawMillis = doc.getLong("lastMessageTimestamp") ?: 0L
+                            val lastMsgRaw = doc.getString("lastMessage") ?: ""
+
+                            val chat = Chat(
+                                id = doc.id,
+                                contactName = (names?.get(otherUid) as? String) ?: "Unknown",
+                                avatarInitials = ((names?.get(otherUid) as? String) ?: "??").take(2).uppercase(),
+                                avatarColorHex = 0xFF6E56CFL,
+                                isOnline = false,
+                                lastSeenText = "",
+                                lastMessage = lastMsgRaw,
+                                lastMessageTimestamp = formatTime(rawMillis),
+                                unreadCount = 0
+                            )
+                            rawMillis to chat
+                        }?.sortedByDescending { it.first }?.map { it.second } ?: emptyList()
+                        trySend(mapped)
+                    }
+            }
+        }
+
+        auth.addAuthStateListener(authListener)
+
+        awaitClose {
+            auth.removeAuthStateListener(authListener)
+            registration?.remove()
         }
     }.distinctUntilChanged()
 
@@ -238,6 +268,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     cacheDecryptedMessages(map)
                 }
+
+                // Resume pending attachment downloads that survived an app restart.
+                // Descriptors were persisted to Room immediately after Double Ratchet decryption,
+                // so they are always available even if the previous download was interrupted.
+                resumePendingAttachmentDownloads(chatId)
             }
 
             // Firestore snapshot flow (raw docs, no decryption)
@@ -389,32 +424,151 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun createOrGetChatWithUser(otherUid: String, otherUsername: String, myUidParam: String, onChatReady: (String) -> Unit) {
+        val cleanMyUid = myUidParam.trim()
+        val cleanOtherUid = otherUid.trim()
+        if (cleanMyUid.isBlank() || cleanOtherUid.isBlank()) {
+            android.util.Log.e("ChatViewModel", "Cannot create chat: invalid blank UID (myUid='$cleanMyUid', otherUid='$cleanOtherUid')")
+            return
+        }
+
         viewModelScope.launch {
             try {
-                val chatId = listOf(myUidParam, otherUid).sorted().joinToString("_")
+                val chatId = listOf(cleanMyUid, cleanOtherUid).sorted().joinToString("_")
                 val chatRef = firestore.collection("chats").document(chatId)
-                val existing = chatRef.get().await()
-                if (!existing.exists()) {
-                    val myDoc = firestore.collection("users").document(myUidParam).get().await()
-                    val myUsername = myDoc.getString("username") ?: "Me"
-                    val myPhoto = myDoc.getString("profilePictureUrl") ?: ""
-                    val otherDoc = firestore.collection("users").document(otherUid).get().await()
-                    val otherPhoto = otherDoc.getString("profilePictureUrl") ?: ""
+
+                var chatExists = false
+                try {
+                    val existing = chatRef.get().await()
+                    chatExists = existing.exists()
+                } catch (e: Exception) {
+                    // Under strict Firestore security rules, reading a chat document that does
+                    // not exist yet evaluates isParticipant(resource.data) with null resource,
+                    // which returns PERMISSION_DENIED. We catch this and proceed to create the chat.
+                    chatExists = false
+                }
+
+                if (!chatExists) {
+                    val myDoc = try {
+                        firestore.collection("users").document(cleanMyUid).get().await()
+                    } catch (e: Exception) {
+                        null
+                    }
+                    val myUsername = myDoc?.getString("username") ?: "Me"
+                    val myPhoto = myDoc?.getString("profilePictureUrl") ?: ""
+
+                    val otherDoc = try {
+                        firestore.collection("users").document(cleanOtherUid).get().await()
+                    } catch (e: Exception) {
+                        null
+                    }
+                    val otherPhoto = otherDoc?.getString("profilePictureUrl") ?: ""
 
                     val data = hashMapOf(
-                        "participants" to listOf(myUidParam, otherUid),
-                        "participantNames" to mapOf(myUidParam to myUsername, otherUid to otherUsername),
-                        "participantPhotos" to mapOf(myUidParam to myPhoto, otherUid to otherPhoto),
+                        "participants" to listOf(cleanMyUid, cleanOtherUid),
+                        "participantNames" to mapOf(cleanMyUid to myUsername, cleanOtherUid to otherUsername),
+                        "participantPhotos" to mapOf(cleanMyUid to myPhoto, cleanOtherUid to otherPhoto),
                         "lastMessage" to "",
                         "lastMessageTimestamp" to System.currentTimeMillis(),
                         "createdAt" to System.currentTimeMillis()
                     )
-                    chatRef.set(data).await()
+                    // Set creates or merges the chat document. Create is permitted under Firestore rules
+                    // when request.auth.uid is in request.resource.data.participants.
+                    chatRef.set(data, com.google.firebase.firestore.SetOptions.merge()).await()
                 }
                 onChatReady(chatId)
             } catch (e: Exception) {
-                android.util.Log.e("ChatViewModel", "Failed to create chat", e)
+                android.util.Log.e("ChatViewModel", "Failed to create or get chat", e)
             }
+        }
+    }
+
+    /**
+     * Serialized session encryption under per-peer mutex.
+     * Reused by both sendTextMessage and uploadImageAndSend for consistent security,
+     * identity key checking, and Double Ratchet state management.
+     */
+    private suspend fun encryptPayloadForPeer(otherUid: String, payloadBytes: ByteArray): CiphertextMessage? {
+        val recipientAddress = SignalProtocolAddress(otherUid, KeyManager.DEVICE_ID)
+        return getMutexFor(otherUid).withLock {
+            if (!keyManager.hasKeysForUser(myUid) && (myEmail.isBlank() || !keyManager.hasKeysForUser(myEmail))) {
+                android.util.Log.e("TeleXE2EE", "Cannot encrypt: local keys are missing for user $myUid")
+                _sendError.value = "Cannot send message: local encryption keys are missing. Key recovery required."
+                return@withLock null
+            }
+            val store = keyManager.getProtocolStore(myUid, myEmail)
+            val keystoreStore = store as? com.e2eechat.app.crypto.KeystoreSignalProtocolStore
+            val trustedIdentity = keystoreStore?.getIdentity(recipientAddress) ?: store.getIdentity(recipientAddress)
+
+            // 1. Clean up structurally invalid sessions (no sender chain, rotated local identity, or mismatched remote identity)
+            if (keystoreStore != null && keystoreStore.containsSession(recipientAddress) && !keystoreStore.isSessionValid(recipientAddress)) {
+                android.util.Log.w("TeleXE2EE", "Deleting structurally invalid session for $otherUid")
+                keystoreStore.deleteSession(recipientAddress)
+            }
+
+            // 2. Validate against peer's published prekey bundle metadata
+            val remoteMetadata = keyManager.fetchPreKeyBundleMetadata(otherUid)
+            if (remoteMetadata != null) {
+                // Strict identity check: if remote identity changed from trusted identity,
+                // NEVER automatically overwrite and NEVER reuse stale session!
+                if (trustedIdentity != null && trustedIdentity != remoteMetadata.identityKey) {
+                    val trustedFp = identityFingerprint(trustedIdentity)
+                    val newFp = identityFingerprint(remoteMetadata.identityKey)
+                    android.util.Log.e(
+                        "TeleXE2EE",
+                        "Outgoing send blocked: Identity mismatch for $otherUid: trusted=$trustedFp, remote=$newFp"
+                    )
+                    _identityMismatch.value = IdentityMismatchEvent(
+                        peerUid = otherUid,
+                        storedIdentityFingerprint = trustedFp,
+                        newIdentityFingerprint = newFp
+                    )
+                    _sendError.value = "Security warning: Recipient identity key has changed. Verification required."
+                    return@withLock null
+                }
+
+                // If remote registration ID changed, the peer has re-registered; the existing session is dead
+                val sessionRegId = keystoreStore?.getSessionRemoteRegistrationId(recipientAddress)
+                if (store.containsSession(recipientAddress) && sessionRegId != null && sessionRegId != remoteMetadata.registrationId) {
+                    android.util.Log.i(
+                        "TeleXE2EE",
+                        "Peer $otherUid re-registered (oldRegId=$sessionRegId, newRegId=${remoteMetadata.registrationId}); replacing session"
+                    )
+                    keystoreStore.deleteSession(recipientAddress)
+                }
+            }
+
+            // 3. If no session exists (or stale session was deleted), establish new one from bundle
+            if (!store.containsSession(recipientAddress)) {
+                val bundle = keyManager.fetchAndConsumePreKeyBundle(otherUid)
+                android.util.Log.i(
+                    "TeleXE2EE",
+                    "Outgoing session establish: targetUid=$otherUid fetchedBundleFp=${identityFingerprint(bundle.identityKey)} myFp=${identityFingerprint(store.identityKeyPair.publicKey)}"
+                )
+
+                // Strict identity check before processing bundle
+                if (trustedIdentity != null && trustedIdentity != bundle.identityKey) {
+                    val trustedFp = identityFingerprint(trustedIdentity)
+                    val newFp = identityFingerprint(bundle.identityKey)
+                    android.util.Log.e(
+                        "TeleXE2EE",
+                        "Outgoing bundle blocked: Identity mismatch for $otherUid: trusted=$trustedFp, bundle=$newFp"
+                    )
+                    _identityMismatch.value = IdentityMismatchEvent(
+                        peerUid = otherUid,
+                        storedIdentityFingerprint = trustedFp,
+                        newIdentityFingerprint = newFp
+                    )
+                    _sendError.value = "Security warning: Recipient identity key has changed. Verification required."
+                    return@withLock null
+                }
+
+                val signalBundle = bundle.toSignalPreKeyBundle()
+                val sessionBuilder = SessionBuilder(store, recipientAddress)
+                sessionBuilder.process(signalBundle)
+            }
+
+            val cipher = SessionCipher(store, recipientAddress)
+            cipher.encrypt(payloadBytes)
         }
     }
 
@@ -424,6 +578,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun sendTextMessage(chatId: String, text: String) {
         if (text.isBlank() || myUid.isBlank()) return
+        if (text.length > MAX_MESSAGE_TEXT_LENGTH) {
+            _sendError.value = "Message exceeds maximum length of $MAX_MESSAGE_TEXT_LENGTH characters."
+            return
+        }
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 // Determine recipient UID from chatId (format: "uid1_uid2")
@@ -435,86 +593,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 val now = System.currentTimeMillis()
-                val recipientAddress = SignalProtocolAddress(otherUid, KeyManager.DEVICE_ID)
-
-                // Serialized session encryption under mutex
-                val ciphertextMessage: CiphertextMessage? = getMutexFor(otherUid).withLock {
-                    val store = keyManager.getProtocolStore(myUid, myEmail)
-                    val keystoreStore = store as? com.e2eechat.app.crypto.KeystoreSignalProtocolStore
-                    val trustedIdentity = keystoreStore?.getIdentity(recipientAddress) ?: store.getIdentity(recipientAddress)
-
-                    // 1. Clean up structurally invalid sessions (no sender chain, rotated local identity, or mismatched remote identity)
-                    if (keystoreStore != null && keystoreStore.containsSession(recipientAddress) && !keystoreStore.isSessionValid(recipientAddress)) {
-                        android.util.Log.w("TeleXE2EE", "Deleting structurally invalid session for $otherUid")
-                        keystoreStore.deleteSession(recipientAddress)
-                    }
-
-                    // 2. Validate against peer's published prekey bundle metadata
-                    val remoteMetadata = keyManager.fetchPreKeyBundleMetadata(otherUid)
-                    if (remoteMetadata != null) {
-                        // Strict identity check: if remote identity changed from trusted identity,
-                        // NEVER automatically overwrite and NEVER reuse stale session!
-                        if (trustedIdentity != null && trustedIdentity != remoteMetadata.identityKey) {
-                            val trustedFp = identityFingerprint(trustedIdentity)
-                            val newFp = identityFingerprint(remoteMetadata.identityKey)
-                            android.util.Log.e(
-                                "TeleXE2EE",
-                                "Outgoing send blocked: Identity mismatch for $otherUid: trusted=$trustedFp, remote=$newFp"
-                            )
-                            _identityMismatch.value = IdentityMismatchEvent(
-                                peerUid = otherUid,
-                                storedIdentityFingerprint = trustedFp,
-                                newIdentityFingerprint = newFp
-                            )
-                            _sendError.value = "Security warning: Recipient identity key has changed. Verification required."
-                            return@withLock null
-                        }
-
-                        // If remote registration ID changed, the peer has re-registered; the existing session is dead
-                        val sessionRegId = keystoreStore?.getSessionRemoteRegistrationId(recipientAddress)
-                        if (store.containsSession(recipientAddress) && sessionRegId != null && sessionRegId != remoteMetadata.registrationId) {
-                            android.util.Log.i(
-                                "TeleXE2EE",
-                                "Peer $otherUid re-registered (oldRegId=$sessionRegId, newRegId=${remoteMetadata.registrationId}); replacing session"
-                            )
-                            keystoreStore.deleteSession(recipientAddress)
-                        }
-                    }
-
-                    // 3. If no session exists (or stale session was deleted), establish new one from bundle
-                    if (!store.containsSession(recipientAddress)) {
-                        val bundle = keyManager.fetchAndConsumePreKeyBundle(otherUid)
-                        android.util.Log.i(
-                            "TeleXE2EE",
-                            "Outgoing session establish: targetUid=$otherUid fetchedBundleFp=${identityFingerprint(bundle.identityKey)} myFp=${identityFingerprint(store.identityKeyPair.publicKey)}"
-                        )
-
-                        // Strict identity check before processing bundle
-                        if (trustedIdentity != null && trustedIdentity != bundle.identityKey) {
-                            val trustedFp = identityFingerprint(trustedIdentity)
-                            val newFp = identityFingerprint(bundle.identityKey)
-                            android.util.Log.e(
-                                "TeleXE2EE",
-                                "Outgoing bundle blocked: Identity mismatch for $otherUid: trusted=$trustedFp, bundle=$newFp"
-                            )
-                            _identityMismatch.value = IdentityMismatchEvent(
-                                peerUid = otherUid,
-                                storedIdentityFingerprint = trustedFp,
-                                newIdentityFingerprint = newFp
-                            )
-                            _sendError.value = "Security warning: Recipient identity key has changed. Verification required."
-                            return@withLock null
-                        }
-
-                        val signalBundle = bundle.toSignalPreKeyBundle()
-                        val sessionBuilder = SessionBuilder(store, recipientAddress)
-                        sessionBuilder.process(signalBundle)
-                    }
-
-                    val cipher = SessionCipher(store, recipientAddress)
-                    cipher.encrypt(text.toByteArray(Charsets.UTF_8))
-                }
-
+                val ciphertextMessage = encryptPayloadForPeer(otherUid, text.toByteArray(Charsets.UTF_8))
                 if (ciphertextMessage == null) {
                     return@launch
                 }
@@ -591,6 +670,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val recipientUid = myUid
         val ciphertextLen = ciphertextBase64.length
         var sessionExists = false
+        if (!keyManager.hasKeysForUser(myUid) && (myEmail.isBlank() || !keyManager.hasKeysForUser(myEmail))) {
+            android.util.Log.w("TeleXE2EE", "Cannot decrypt message $messageId: local encryption keys are missing for user $myUid")
+            return@withContext DecryptionResult.Failure(IllegalStateException("Local encryption keys missing"))
+        }
         try {
             val store = keyManager.getProtocolStore(myUid, myEmail)
             val senderAddress = SignalProtocolAddress(senderUid, KeyManager.DEVICE_ID)
@@ -739,20 +822,34 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     is DecryptionResult.Success -> {
                         // Persist to local Room database (never to Firestore)
                         ensureChatExists(chatId)
+                        val parsedDesc = AttachmentCrypto.parseDescriptorOrNull(result.plaintext)
+                        val (contentToStore, descriptorToStore, cacheText) = if (parsedDesc != null) {
+                            Triple(parsedDesc.caption, result.plaintext, parsedDesc.caption.ifBlank { "📷 Photo" })
+                        } else {
+                            Triple(result.plaintext, null, result.plaintext)
+                        }
                         messageDao.insertMessage(
                             MessageEntity(
                                 id = doc.id,
                                 chatId = chatId,
-                                content = result.plaintext,
+                                content = contentToStore,
                                 timestamp = formatTime(doc.timestampMillis),
                                 isSentByMe = false,
                                 isRead = doc.status == "read",
-                                imageUrl = doc.imageUrl
+                                imageUrl = doc.imageUrl,
+                                attachmentDescriptor = descriptorToStore
                             )
                         )
-                        cacheDecryptedMessage(doc.id, result.plaintext)
+                        cacheDecryptedMessage(doc.id, cacheText)
                         clearMessageFailed(doc.id)
                         decryptionRetryCounts.remove(doc.id)
+
+                        // Trigger background download for encrypted attachments
+                        if (parsedDesc != null) {
+                            viewModelScope.launch(Dispatchers.IO) {
+                                downloadAndDecryptAttachment(doc.id, chatId)
+                            }
+                        }
                     }
                     is DecryptionResult.Duplicate -> {
                         // Re-check Room in case written concurrently
@@ -818,35 +915,273 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun uploadImageAndSend(chatId: String, imageUri: Uri, senderId: String, timestamp: String) {
-        viewModelScope.launch {
+        if (myUid.isBlank()) return
+        viewModelScope.launch(Dispatchers.IO) {
             try {
-                val context = getApplication<Application>()
-                val inputStream = context.contentResolver.openInputStream(imageUri)
-                val bytes = inputStream?.readBytes()
-                inputStream?.close()
-                if (bytes == null) {
-                    android.util.Log.e("ChatViewModel", "Could not read image bytes")
+                val parts = chatId.split("_")
+                val otherUid = parts.firstOrNull { it != myUid }
+                if (otherUid.isNullOrBlank()) {
+                    android.util.Log.e("ChatViewModel", "Cannot resolve recipient UID from chatId: $chatId")
+                    _sendError.value = "Cannot resolve recipient."
                     return@launch
                 }
-                val fileName = "${chatId}_${System.currentTimeMillis()}.jpg"
-                val bucket = supabase.storage.from("chat-images")
-                bucket.upload(fileName, bytes)
-                val publicUrl = bucket.publicUrl(fileName)
 
+                val context = getApplication<Application>()
+
+                // 1. Read image bytes and validate max size
+                val bytes = context.contentResolver.openInputStream(imageUri)?.use { stream ->
+                    val buffer = java.io.ByteArrayOutputStream()
+                    val data = ByteArray(8192)
+                    var totalRead = 0
+                    var nRead: Int
+                    while (stream.read(data, 0, data.size).also { nRead = it } != -1) {
+                        totalRead += nRead
+                        if (totalRead > MAX_CHAT_IMAGE_SIZE) {
+                            throw IllegalArgumentException("Image exceeds 10MB limit")
+                        }
+                        buffer.write(data, 0, nRead)
+                    }
+                    buffer.toByteArray()
+                }
+                if (bytes == null || bytes.isEmpty()) {
+                    android.util.Log.e("ChatViewModel", "Could not read image bytes")
+                    _sendError.value = "Could not read image file."
+                    return@launch
+                }
+
+                val mimeType = context.contentResolver.getType(imageUri) ?: "image/jpeg"
+
+                // 2. Persist local copy to internal app filesDir so sender can display the photo reliably
+                val attachmentsDir = File(context.filesDir, "attachments").apply { mkdirs() }
+                val localAttachmentFile = File(attachmentsDir, "sent_${System.currentTimeMillis()}_${UUID.randomUUID().toString().take(8)}.jpg")
+                localAttachmentFile.writeBytes(bytes)
+                val localFileUriString = localAttachmentFile.toURI().toString()
+
+                // 3. Client-side encryption with AttachmentCrypto
+                val encryptedAttachment = AttachmentCrypto.encrypt(bytes)
+                val objectName = "${UUID.randomUUID()}.enc"
+                val storagePath = "chat-images/$objectName"
+
+                val descriptor = AttachmentCrypto.createDescriptor(
+                    encrypted = encryptedAttachment,
+                    storagePath = storagePath,
+                    mimeType = mimeType,
+                    caption = ""
+                )
+                val descriptorJson = AttachmentCrypto.serializeDescriptor(descriptor)
+
+                // 4. Upload ciphertext ONLY to Supabase before ratcheting
+                // If upload fails here (e.g. offline/timeout), the Double Ratchet is NEVER advanced
+                val bucket = supabase.storage.from("chat-images")
+                bucket.upload(objectName, encryptedAttachment.ciphertext)
+
+                // 5. Encrypt descriptor through per-peer Double Ratchet session under mutex
+                val ciphertextMessage = encryptPayloadForPeer(otherUid, descriptorJson.toByteArray(Charsets.UTF_8))
+                if (ciphertextMessage == null) {
+                    // Identity mismatch or session establishment failure (error state already set)
+                    return@launch
+                }
+
+                val ciphertextBase64 = Base64.encodeToString(ciphertextMessage.serialize(), Base64.NO_WRAP)
+                val messageType = ciphertextMessage.type
                 val now = System.currentTimeMillis()
+
+                // 6. Post standard encrypted message document to Firestore
+                // Never place AES key, IV, descriptor, or plaintext image URL in Firestore
                 val messageData = hashMapOf(
                     "senderId" to myUid,
-                    "text" to "",
-                    "imageUrl" to publicUrl,
+                    "text" to null,
+                    "ciphertext" to ciphertextBase64,
+                    "messageType" to messageType,
+                    "senderDeviceId" to KeyManager.DEVICE_ID,
+                    "imageUrl" to null,
                     "timestampMillis" to now,
                     "status" to "sent"
                 )
+
                 val chatRef = firestore.collection("chats").document(chatId)
-                chatRef.collection("messages").add(messageData).await()
-                chatRef.update(mapOf("lastMessage" to "Photo", "lastMessageTimestamp" to now)).await()
+                val addedDoc = chatRef.collection("messages").add(messageData).await()
+
+                // 7. Update reactive cache and local Room persistence
+                // Sender displays the local file image immediately with double-tick tracking
+                cacheDecryptedMessage(addedDoc.id, "")
+
+                ensureChatExists(chatId)
+                messageDao.insertMessage(
+                    MessageEntity(
+                        id = addedDoc.id,
+                        chatId = chatId,
+                        content = "",
+                        timestamp = formatTime(now),
+                        isSentByMe = true,
+                        isRead = false,
+                        imageUrl = localFileUriString,
+                        attachmentDescriptor = descriptorJson
+                    )
+                )
+
+                // Update chat metadata with opaque "Photo" preview
+                chatRef.update(
+                    mapOf(
+                        "lastMessage" to "Photo",
+                        "lastMessageTimestamp" to now
+                    )
+                ).await()
+
             } catch (e: Exception) {
-                android.util.Log.e("ChatViewModel", "Image upload failed", e)
+                android.util.Log.e("ChatViewModel", "Image upload and send failed", e)
+                _sendError.value = "Failed to send photo: ${e.message ?: "Unknown error"}"
             }
+        }
+    }
+
+    /**
+     * Downloads, verifies, and decrypts an encrypted attachment for a received message.
+     *
+     * Safety guarantees:
+     * - The descriptor was persisted to Room before this method is called, so the Double Ratchet
+     *   message never needs to be replayed to recover the AES key and IV.
+     * - SHA-256 hash is verified before GCM decryption to detect transit corruption early.
+     * - AES-GCM authenticated decryption rejects tampered ciphertext or incorrect keys.
+     * - Decrypted bytes are saved only to app-private internal storage (filesDir/attachments/).
+     * - The Room imageUrl is updated atomically, so the UI picks up the local file path.
+     * - In-flight tracking prevents duplicate concurrent downloads for the same message.
+     * - Network failures, missing blobs, and corrupted data are caught without crashing.
+     * - Keys, IVs, and plaintext are never logged.
+     */
+    private suspend fun downloadAndDecryptAttachment(messageId: String, chatId: String) {
+        // Guard: prevent duplicate concurrent downloads
+        if (!attachmentDownloadsInFlight.add(messageId)) {
+            return
+        }
+
+        try {
+            // 1. Read persisted descriptor from Room
+            val descriptorJson = messageDao.getAttachmentDescriptorById(messageId)
+            if (descriptorJson.isNullOrBlank()) {
+                android.util.Log.w("TeleXAttachment", "No descriptor found for message $messageId; skipping download")
+                return
+            }
+
+            val descriptor = AttachmentCrypto.parseDescriptorOrNull(descriptorJson)
+            if (descriptor == null) {
+                android.util.Log.e("TeleXAttachment", "Failed to parse descriptor for message $messageId; data may be corrupt")
+                return
+            }
+
+            // 2. Check if already downloaded (imageUrl already set to a local file)
+            val existingMessage = messageDao.getMessageById(messageId)
+            if (existingMessage != null && !existingMessage.imageUrl.isNullOrBlank()) {
+                // Already downloaded; ensure cache is populated
+                val displayText = existingMessage.content.ifBlank { descriptor.caption.ifBlank { "📷 Photo" } }
+                cacheDecryptedMessage(messageId, displayText)
+                return
+            }
+
+            // 3. Download ciphertext from Supabase Storage
+            //    The descriptor.storagePath is "chat-images/<uuid>.enc".
+            //    The bucket reference is "chat-images", so the object name is just the filename.
+            val objectName = descriptor.storagePath.removePrefix("chat-images/")
+            val bucket = supabase.storage.from("chat-images")
+
+            val ciphertextBytes: ByteArray
+            try {
+                ciphertextBytes = bucket.downloadAuthenticated(objectName)
+            } catch (e: Exception) {
+                android.util.Log.e(
+                    "TeleXAttachment",
+                    "Failed to download attachment for message $messageId: ${e.javaClass.simpleName}"
+                )
+                return
+            }
+
+            if (ciphertextBytes.isEmpty()) {
+                android.util.Log.e("TeleXAttachment", "Downloaded empty ciphertext for message $messageId")
+                return
+            }
+
+            // 4. Verify SHA-256 hash and decrypt with AES-GCM
+            val decryptedBytes: ByteArray
+            try {
+                decryptedBytes = AttachmentCrypto.decryptWithDescriptor(descriptor, ciphertextBytes)
+            } catch (e: AttachmentHashMismatchException) {
+                android.util.Log.e(
+                    "TeleXAttachment",
+                    "Attachment hash mismatch for message $messageId; ciphertext may have been tampered with"
+                )
+                return
+            } catch (e: AttachmentAuthenticationException) {
+                android.util.Log.e(
+                    "TeleXAttachment",
+                    "Attachment GCM authentication failed for message $messageId; ciphertext or key is invalid"
+                )
+                return
+            } catch (e: Exception) {
+                android.util.Log.e(
+                    "TeleXAttachment",
+                    "Attachment decryption failed for message $messageId: ${e.javaClass.simpleName}"
+                )
+                return
+            }
+
+            // 5. Save decrypted image to app-private internal storage
+            val context = getApplication<Application>()
+            val attachmentsDir = File(context.filesDir, "attachments").apply { mkdirs() }
+            val extension = mimeTypeToExtension(descriptor.mimeType)
+            val localFile = File(
+                attachmentsDir,
+                "recv_${System.currentTimeMillis()}_${UUID.randomUUID().toString().take(8)}.$extension"
+            )
+            localFile.writeBytes(decryptedBytes)
+            val localFileUri = localFile.toURI().toString()
+
+            // 6. Update Room: set imageUrl to the local file path
+            messageDao.updateMessageImageUrl(messageId, localFileUri)
+
+            // 7. Update the reactive decrypted cache so UI recomposes with the image
+            val displayText = descriptor.caption.ifBlank { "📷 Photo" }
+            cacheDecryptedMessage(messageId, displayText)
+
+            android.util.Log.i(
+                "TeleXAttachment",
+                "Successfully downloaded and decrypted attachment for message $messageId (${decryptedBytes.size} bytes)"
+            )
+        } finally {
+            attachmentDownloadsInFlight.remove(messageId)
+        }
+    }
+
+    /**
+     * Resumes all pending attachment downloads for a chat.
+     * Called on app restart when Room data is pre-loaded for a chat.
+     * Uses the persisted descriptor from Room (never requires replaying ratchet messages).
+     */
+    private suspend fun resumePendingAttachmentDownloads(chatId: String) {
+        try {
+            val pendingMessages = messageDao.getPendingAttachmentMessages(chatId)
+            for (msg in pendingMessages) {
+                // Skip sender's own messages (they already have local file URIs)
+                if (msg.isSentByMe) continue
+                viewModelScope.launch(Dispatchers.IO) {
+                    downloadAndDecryptAttachment(msg.id, chatId)
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("TeleXAttachment", "Failed to resume pending downloads for chat $chatId", e)
+        }
+    }
+
+    /**
+     * Maps a MIME type to a file extension for saving decrypted attachments.
+     */
+    private fun mimeTypeToExtension(mimeType: String): String {
+        return when (mimeType.lowercase()) {
+            "image/jpeg", "image/jpg" -> "jpg"
+            "image/png" -> "png"
+            "image/gif" -> "gif"
+            "image/webp" -> "webp"
+            "image/heif", "image/heic" -> "heic"
+            else -> "jpg"
         }
     }
 

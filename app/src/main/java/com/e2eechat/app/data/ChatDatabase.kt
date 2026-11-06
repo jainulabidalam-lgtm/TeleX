@@ -11,6 +11,8 @@ import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.Update
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 @Entity(tableName = "chats")
@@ -45,8 +47,14 @@ data class MessageEntity(
     val timestamp: String,
     val isSentByMe: Boolean,
     val isRead: Boolean,
-    val imageUrl: String? = null
-)
+    val imageUrl: String? = null,
+    val attachmentDescriptor: String? = null
+) {
+    override fun toString(): String {
+        val descStr = if (attachmentDescriptor != null) "[DESCRIPTOR_REDACTED]" else "null"
+        return "MessageEntity(id=$id, chatId=$chatId, content=$content, timestamp=$timestamp, isSentByMe=$isSentByMe, isRead=$isRead, imageUrl=$imageUrl, attachmentDescriptor=$descStr)"
+    }
+}
 
 @Dao
 interface ChatDao {
@@ -86,11 +94,35 @@ interface MessageDao {
     @Query("UPDATE messages SET content = :content WHERE id = :id")
     suspend fun updateMessageContent(id: String, content: String)
 
+    @Query("UPDATE messages SET imageUrl = :imageUrl WHERE id = :id")
+    suspend fun updateMessageImageUrl(id: String, imageUrl: String)
+
+    @Query("SELECT attachmentDescriptor FROM messages WHERE id = :id LIMIT 1")
+    suspend fun getAttachmentDescriptorById(id: String): String?
+
+    @Query("UPDATE messages SET attachmentDescriptor = :descriptor WHERE id = :id")
+    suspend fun updateAttachmentDescriptor(id: String, descriptor: String?)
+
+    @Query("SELECT * FROM messages WHERE chatId = :chatId AND attachmentDescriptor IS NOT NULL AND (imageUrl IS NULL OR imageUrl = '')")
+    suspend fun getPendingAttachmentMessages(chatId: String): List<MessageEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertMessage(message: MessageEntity)
 }
 
-@Database(entities = [ChatEntity::class, MessageEntity::class], version = 2, exportSchema = false)
+val MIGRATION_1_2 = object : Migration(1, 2) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE messages ADD COLUMN imageUrl TEXT DEFAULT NULL")
+    }
+}
+
+val MIGRATION_2_3 = object : Migration(2, 3) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE messages ADD COLUMN attachmentDescriptor TEXT DEFAULT NULL")
+    }
+}
+
+@Database(entities = [ChatEntity::class, MessageEntity::class], version = 3, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun chatDao(): ChatDao
     abstract fun messageDao(): MessageDao
@@ -105,7 +137,11 @@ abstract class AppDatabase : RoomDatabase() {
                     context.applicationContext,
                     AppDatabase::class.java,
                     "e2eechat.db"
-                ).fallbackToDestructiveMigration().build().also { instance = it }
+                )
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .fallbackToDestructiveMigration()
+                .build()
+                .also { instance = it }
             }
     }
 }

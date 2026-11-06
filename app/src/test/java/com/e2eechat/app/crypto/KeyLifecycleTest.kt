@@ -679,4 +679,63 @@ class KeyLifecycleTest {
         assertTrue(store2.isTrustedIdentity(bobAddress, bobKeys.publicKey, IdentityKeyStore.Direction.SENDING))
         assertTrue(store2.isTrustedIdentity(bobAddress, bobKeys.publicKey, IdentityKeyStore.Direction.RECEIVING))
     }
+
+    @Test
+    fun testMixedCaseFirebaseUidPreservesKeysAndCompatibility() = runBlocking {
+        val prefs = TestSharedPreferences()
+        val storePrefs = TestSharedPreferences()
+        val keyManager = createKeyManager(prefs = prefs, storePrefs = storePrefs)
+        val mixedCaseUid = "W0I7G0sH9degbFXeC5pZQEUplQP2"
+
+        // 1. Generate keys for mixed-case Firebase UID
+        val generated = keyManager.ensureKeysForUser(mixedCaseUid, preKeyCount = 5)
+        assertNotNull(generated)
+        assertFalse(generated.identityKeyPair.publicKey.serialize().isEmpty())
+
+        // 2. Load keys for user using mixed-case UID
+        val loaded = keyManager.loadKeysForUser(mixedCaseUid)
+        assertNotNull(loaded)
+        assertEquals(generated.identityKeyPair.publicKey, loaded!!.identityKeyPair.publicKey)
+
+        // 3. Ensure idempotency: re-ensuring does not regenerate
+        val reEnsured = keyManager.ensureKeysForUser(mixedCaseUid, preKeyCount = 5)
+        assertFalse("Re-ensuring existing keys must not flag as new generation", reEnsured.isNewGeneration)
+        assertEquals(generated.identityKeyPair.publicKey, reEnsured.identityKeyPair.publicKey)
+    }
+
+    @Test
+    fun testExistingAccountIdentitySafetyWhenLocalKeysMissing() = runBlocking {
+        val prefs = TestSharedPreferences()
+        val keyManager = createKeyManager(prefs = prefs)
+        val uid = "W0I7G0sH9degbFXeC5pZQEUplQP2"
+
+        // Simulate local keys missing on a new/reinstalled device
+        assertFalse(keyManager.hasKeysForUser(uid))
+        assertNull(keyManager.loadKeysForUser(uid))
+
+        // Simulate a remote identity key already published in Firestore
+        val remoteKeys = IdentityKeyPair.generate()
+        val remoteIdentityBase64 = Base64Compat.encodeToString(remoteKeys.publicKey.serialize())
+
+        // If a newly generated key attempts to overwrite the remote bundle without rotation:
+        val newlyGeneratedLocalKeys = IdentityKeyPair.generate()
+        assertThrows(IllegalStateException::class.java) {
+            keyManager.validateIdentityForPublication(
+                remoteIdentityBase64,
+                newlyGeneratedLocalKeys.publicKey,
+                allowIdentityRotation = false
+            )
+        }
+
+        // Verify that local keys were NOT stored
+        assertFalse(keyManager.hasKeysForUser(uid))
+    }
+
+    @Test
+    fun testMissingLocalIdentityExceptionType() {
+        val ex = MissingLocalIdentityException("Test missing local identity")
+        assertTrue(ex is IllegalStateException)
+        assertEquals("Test missing local identity", ex.message)
+    }
 }
+

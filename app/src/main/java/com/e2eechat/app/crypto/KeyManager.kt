@@ -80,6 +80,25 @@ data class RemoteBundleMetadata(
     val updatedAt: Long = 0L
 )
 
+sealed class KeySyncResult {
+    /** Prekey bundle is in sync with Firestore (or successfully published matching local keys). */
+    object Synced : KeySyncResult()
+
+    /** Initial prekey bundle was generated and published for a brand new account without existing remote identity. */
+    object NewIdentityPublished : KeySyncResult()
+
+    /** Local keys are missing on this device, but an existing remote identity bundle exists in Firestore. */
+    data class MissingLocalKeys(val message: String) : KeySyncResult()
+
+    /** Remote identity key in Firestore does not match local identity key. */
+    data class IdentityMismatch(val message: String) : KeySyncResult()
+
+    /** Network failure occurred while checking or publishing prekey bundle. */
+    data class NetworkError(val error: Throwable) : KeySyncResult()
+}
+
+class MissingLocalIdentityException(message: String) : IllegalStateException(message)
+
 /**
  * Manages Signal Protocol cryptographic key generation, secure persistence in Android Keystore,
  * and publication of public key material to Firestore.
@@ -149,7 +168,7 @@ class KeyManager(
      * Checks whether Signal keys have already been generated for the given user.
      */
     fun hasKeysForUser(userIdentifier: String): Boolean {
-        val id = userIdentifier.trim().lowercase()
+        val id = userIdentifier.trim()
         if (id.isEmpty()) return false
         return securePreferences.getBoolean(userKey(id, "has_keys"), false)
     }
@@ -158,7 +177,7 @@ class KeyManager(
      * Removes a single consumed one-time prekey from local storage.
      */
     fun removePreKey(userIdentifier: String, preKeyId: Int) {
-        val id = userIdentifier.trim().lowercase()
+        val id = userIdentifier.trim()
         securePreferences.edit().remove(userKey(id, "prekey_$preKeyId")).apply()
         SafeLog.d("TeleXE2EE", "Removed local prekey $preKeyId for uid=$id")
     }
@@ -201,7 +220,7 @@ class KeyManager(
      * stored in local secure storage. Stale, consumed, or corrupted prekeys are excluded.
      */
     fun filterVerifiedPreKeys(userIdentifier: String, preKeys: List<PreKeyRecord>): List<PreKeyRecord> {
-        val id = userIdentifier.trim().lowercase()
+        val id = userIdentifier.trim()
         return preKeys.filter { preKey ->
             val storedBase64 = securePreferences.getString(userKey(id, "prekey_${preKey.id}"), null)
             if (storedBase64.isNullOrBlank()) {
@@ -268,7 +287,7 @@ class KeyManager(
         minThreshold: Int = MIN_PREKEY_THRESHOLD,
         targetCount: Int = DEFAULT_PREKEY_COUNT
     ): List<PreKeyRecord> {
-        val id = userIdentifier.trim().lowercase()
+        val id = userIdentifier.trim()
         val verifiedExisting = filterVerifiedPreKeys(id, existingPreKeys)
 
         if (verifiedExisting.size >= minThreshold) {
@@ -331,8 +350,8 @@ class KeyManager(
         fallbackIdentifier: String? = null,
         preKeyCount: Int = DEFAULT_PREKEY_COUNT
     ): KeyGenerationResult = withContext(Dispatchers.IO) {
-        val id = userIdentifier.trim().lowercase()
-        val fallback = fallbackIdentifier?.trim()?.lowercase().orEmpty()
+        val id = userIdentifier.trim()
+        val fallback = fallbackIdentifier?.trim().orEmpty()
         require(id.isNotEmpty()) { "User identifier cannot be blank" }
 
         // Migration from legacy fallback (e.g. email) to UID:
@@ -373,12 +392,41 @@ class KeyManager(
             }
         }
 
+        // Before generating new keys: verify that a remote identity bundle does not already exist!
+        checkRemoteIdentityBeforeGeneration(id)
+
         generateAndStoreKeys(id, preKeyCount)
     }
 
+    private suspend fun checkRemoteIdentityBeforeGeneration(id: String) {
+        val cleanId = id.trim()
+        try {
+            val remoteDoc = firestore.collection("users").document(cleanId)
+                .collection("prekey_bundle").document("current").get().await()
+            if (remoteDoc != null && remoteDoc.exists() && !remoteDoc.getString("identityKey").isNullOrBlank()) {
+                val remoteFp = try {
+                    val b64 = remoteDoc.getString("identityKey")!!
+                    identityFingerprint(IdentityKey(Base64Compat.decode(b64)))
+                } catch (_: Exception) { "unknown" }
+
+                SafeLog.e(
+                    "TeleXE2EE",
+                    "REFUSING to generate new keys for id=$cleanId: Remote identity bundle already exists (fp=$remoteFp) but local keys are missing. Secure key recovery or re-verification required."
+                )
+                throw MissingLocalIdentityException(
+                    "Local encryption keys missing but remote identity exists in Firestore (fp=$remoteFp). Secure key recovery or re-verification required."
+                )
+            }
+        } catch (e: MissingLocalIdentityException) {
+            throw e
+        } catch (e: Exception) {
+            SafeLog.d("TeleXE2EE", "Skipping remote identity check (offline or unit test): ${e.message}")
+        }
+    }
+
     private fun copyKeys(sourceId: String, destId: String, sourceKeys: KeyGenerationResult) {
-        val s = sourceId.trim().lowercase()
-        val d = destId.trim().lowercase()
+        val s = sourceId.trim()
+        val d = destId.trim()
         SafeLog.w("TeleXE2EE", "COPYING keys from $s to $d fp=${identityFingerprint(sourceKeys.identityKeyPair.publicKey)}")
         if (s.isEmpty() || d.isEmpty() || s == d) return
 
@@ -530,7 +578,7 @@ class KeyManager(
      * Fails explicitly if any required cryptographic record is missing or corrupt.
      */
     fun loadKeysForUser(userIdentifier: String): KeyGenerationResult? {
-        val id = userIdentifier.trim().lowercase()
+        val id = userIdentifier.trim()
         if (!hasKeysForUser(id)) return null
 
         return try {
@@ -618,7 +666,7 @@ class KeyManager(
         userIdentifier: String,
         fallbackIdentifier: String? = null
     ): SignalProtocolStore = withContext(Dispatchers.IO) {
-        val id = userIdentifier.trim().lowercase()
+        val id = userIdentifier.trim()
         val keys = ensureKeysForUser(id, fallbackIdentifier = fallbackIdentifier)
 
         val store = KeystoreSignalProtocolStore(
@@ -658,7 +706,7 @@ class KeyManager(
         keys: KeyGenerationResult,
         allowIdentityRotation: Boolean = false
     ): Unit = withContext(Dispatchers.IO) {
-        val cleanUid = uid.trim().lowercase()
+        val cleanUid = uid.trim()
         require(cleanUid.isNotBlank()) { "UID cannot be blank" }
 
         val localIdentityKeyBase64 = Base64Compat.encodeToString(keys.identityKeyPair.publicKey.serialize())
@@ -752,6 +800,90 @@ class KeyManager(
     }
 
     /**
+     * Checks remote identity and synchronizes prekeys on login or startup.
+     *
+     * Safety rules:
+     * 1. If local keys exist:
+     *    - Validates against remote bundle (never overwriting a different remote identity).
+     *    - Replenishes one-time prekeys if below threshold.
+     * 2. If local keys are missing:
+     *    - Checks Firestore `users/{uid}/prekey_bundle/current`.
+     *    - If remote bundle exists with an identity key: REFUSES to generate or publish replacement keys.
+     *      Reports [KeySyncResult.MissingLocalKeys] so the app can preserve existing keys and
+     *      notify the user that secure key recovery or re-verification is required.
+     *    - If remote bundle does not exist: generates and publishes initial key bundle for the new user.
+     * 3. Network failures return [KeySyncResult.NetworkError] without blocking.
+     */
+    suspend fun syncKeysOnLogin(
+        uid: String,
+        fallbackEmail: String? = null
+    ): KeySyncResult = withContext(Dispatchers.IO) {
+        val cleanUid = uid.trim()
+        val cleanFallback = fallbackEmail?.trim().orEmpty()
+        require(cleanUid.isNotBlank()) { "UID cannot be blank" }
+
+        val hasLocal = hasKeysForUser(cleanUid) || (cleanFallback.isNotEmpty() && hasKeysForUser(cleanFallback))
+
+        if (hasLocal) {
+            val keys = try {
+                ensureKeysForUser(cleanUid, fallbackIdentifier = cleanFallback)
+            } catch (e: Exception) {
+                SafeLog.e("TeleXE2EE", "Error loading local keys for uid=$cleanUid: ${e.message}", e)
+                return@withContext KeySyncResult.MissingLocalKeys("Failed to load local keys: ${e.localizedMessage ?: "Storage error"}")
+            }
+
+            try {
+                publishPublicPreKeyBundle(cleanUid, keys, allowIdentityRotation = false)
+                return@withContext KeySyncResult.Synced
+            } catch (e: IllegalStateException) {
+                SafeLog.e("TeleXE2EE", "Remote identity mismatch for uid=$cleanUid: ${e.message}", e)
+                return@withContext KeySyncResult.IdentityMismatch(
+                    "Security warning: Local encryption identity does not match remote identity. Secure key recovery or re-verification required."
+                )
+            } catch (e: Exception) {
+                SafeLog.w("TeleXE2EE", "Network or server error publishing prekey bundle for uid=$cleanUid: ${e.message}")
+                return@withContext KeySyncResult.NetworkError(e)
+            }
+        } else {
+            // Local keys are MISSING on this device
+            val remoteDoc = try {
+                firestore.collection("users").document(cleanUid)
+                    .collection("prekey_bundle").document("current").get().await()
+            } catch (e: Exception) {
+                SafeLog.w("TeleXE2EE", "Network error checking remote prekey bundle for uid=$cleanUid: ${e.message}")
+                return@withContext KeySyncResult.NetworkError(e)
+            }
+
+            val remoteIdentity = remoteDoc?.getString("identityKey")
+            if (remoteDoc != null && remoteDoc.exists() && !remoteIdentity.isNullOrBlank()) {
+                SafeLog.e(
+                    "TeleXE2EE",
+                    "Remote identity exists in Firestore for uid=$cleanUid, but local keys are missing. Refusing to generate replacement identity or overwrite remote keys."
+                )
+                return@withContext KeySyncResult.MissingLocalKeys(
+                    "Local encryption keys missing. Secure key recovery or re-verification is required."
+                )
+            } else {
+                // Brand new user: no remote identity exists in Firestore
+                val newKeys = try {
+                    ensureKeysForUser(cleanUid, fallbackIdentifier = cleanFallback)
+                } catch (e: Exception) {
+                    SafeLog.e("TeleXE2EE", "Error generating keys for new user uid=$cleanUid: ${e.message}", e)
+                    return@withContext KeySyncResult.MissingLocalKeys("Failed to initialize encryption keys: ${e.localizedMessage ?: "Error"}")
+                }
+
+                try {
+                    publishPublicPreKeyBundle(cleanUid, newKeys, allowIdentityRotation = false)
+                    return@withContext KeySyncResult.NewIdentityPublished
+                } catch (e: Exception) {
+                    SafeLog.w("TeleXE2EE", "Network error publishing initial keys for uid=$cleanUid: ${e.message}")
+                    return@withContext KeySyncResult.NetworkError(e)
+                }
+            }
+        }
+    }
+
+    /**
      * Atomically consumes one one-time prekey from the target user's prekey bundle in Firestore.
      *
      * Uses a Firestore transaction to ensure atomic removal, preventing race conditions
@@ -762,9 +894,10 @@ class KeyManager(
     suspend fun fetchAndConsumePreKeyBundle(
         targetUid: String
     ): PublishedPreKeyBundle = withContext(Dispatchers.IO) {
-        require(targetUid.isNotBlank()) { "Target UID cannot be blank" }
+        val cleanTargetUid = targetUid.trim()
+        require(cleanTargetUid.isNotBlank()) { "Target UID cannot be blank" }
 
-        val bundleRef = firestore.collection("users").document(targetUid)
+        val bundleRef = firestore.collection("users").document(cleanTargetUid)
             .collection("prekey_bundle").document("current")
 
         firestore.runTransaction { transaction ->
@@ -847,7 +980,7 @@ class KeyManager(
      * Used for validating identity matching and session freshness before sending messages.
      */
     suspend fun fetchPreKeyBundleMetadata(targetUid: String): RemoteBundleMetadata? = withContext(Dispatchers.IO) {
-        val cleanUid = targetUid.trim().lowercase()
+        val cleanUid = targetUid.trim()
         if (cleanUid.isBlank()) return@withContext null
         try {
             val doc = firestore.collection("users").document(cleanUid)
@@ -875,7 +1008,7 @@ class KeyManager(
     }
 
     fun getKyberPreKeyRecord(userIdentifier: String, kyberPreKeyId: Int): KyberPreKeyRecord? {
-        val id = userIdentifier.trim().lowercase()
+        val id = userIdentifier.trim()
         val base64 = securePreferences.getString(userKey(id, "kyber_prekey_record"), null) ?: return null
         return try {
             val record = KyberPreKeyRecord(Base64Compat.decode(base64))
@@ -886,7 +1019,7 @@ class KeyManager(
     }
 
     fun getIdentityKeyPair(userIdentifier: String): IdentityKeyPair? {
-        val id = userIdentifier.trim().lowercase()
+        val id = userIdentifier.trim()
         val base64 = securePreferences.getString(userKey(id, "identity_key_pair"), null) ?: return null
         return try {
             IdentityKeyPair(Base64Compat.decode(base64))
@@ -896,13 +1029,13 @@ class KeyManager(
     }
 
     fun getRegistrationId(userIdentifier: String): Int? {
-        val id = userIdentifier.trim().lowercase()
+        val id = userIdentifier.trim()
         val regId = securePreferences.getInt(userKey(id, "registration_id"), -1)
         return if (regId != -1) regId else null
     }
 
     fun getSignedPreKeyRecord(userIdentifier: String): SignedPreKeyRecord? {
-        val id = userIdentifier.trim().lowercase()
+        val id = userIdentifier.trim()
         val base64 = securePreferences.getString(userKey(id, "signed_prekey_record"), null) ?: return null
         return try {
             SignedPreKeyRecord(Base64Compat.decode(base64))
@@ -912,7 +1045,7 @@ class KeyManager(
     }
 
     fun clearKeysForUser(userIdentifier: String) {
-        val id = userIdentifier.trim().lowercase()
+        val id = userIdentifier.trim()
         val preKeyCount = securePreferences.getInt(userKey(id, "prekey_count"), 0)
         securePreferences.edit().apply {
             remove(userKey(id, "has_keys"))

@@ -156,19 +156,27 @@ class DecryptedCacheReactivityTest {
             listOf(RawDoc(id = "new1", senderId = "me", ciphertext = "CIPHER==", legacyText = null))
         )
         val emissions = mutableListOf<List<String>>()
-        val job = GlobalScope.launch {
+        val job = launch {
             combine(rawFlow, decryptedCache) { rawDocs, cache ->
                 rawDocs.map { resolveText(it, cache) }
             }.collect { emissions.add(it) }
         }
 
-        delay(50)
+        var retries = 0
+        while (emissions.isEmpty() && retries < 25) {
+            delay(20)
+            retries++
+        }
         assertTrue("Expected initial emission", emissions.isNotEmpty())
         assertEquals("Sending\u2026", emissions.last()[0])
 
         // Simulate add().await() completing
         cacheDecryptedMessage("new1", "Real message text")
-        delay(50)
+        retries = 0
+        while (emissions.last()[0] == "Sending\u2026" && retries < 25) {
+            delay(20)
+            retries++
+        }
 
         assertEquals("Real message text", emissions.last()[0])
         assertNotEquals("Sending\u2026", emissions.last()[0])

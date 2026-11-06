@@ -1,0 +1,248 @@
+rules_version = '2';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TeleX Firestore Security Rules
+// ─────────────────────────────────────────────────────────────────────────────
+// Principles
+//  1. Default-deny: nothing is readable or writable unless an explicit rule grants it.
+//  2. Authentication required everywhere — no public (unauthenticated) access.
+//  3. Users own their own documents. Other users may read public-key bundles (required
+//     for E2EE session setup) but may NOT write them.
+//  4. One-time prekey consumption: any authenticated peer may remove EXACTLY ONE key
+//     from oneTimePreKeys in a single operation. No retained key values may change
+//     (changedKeys() == 0), no new keys may be added, and no other top-level field
+//     may be touched. Enforced by the MapDiff-based isOnlyOneTimePreKeyConsumption().
+//     NOTE: a Cloud Function is the proper long-term mitigation for prekey-exhaustion
+//     attacks; see the in-code comment for the required setup.
+//  5. Chat documents are readable and writable only by listed participants.
+//     The participants array is IMMUTABLE after creation (blocks injection attacks).
+//  6. Messages inside a chat are readable/writable only by participants, and senders
+//     may only create messages attributed to themselves.
+// ─────────────────────────────────────────────────────────────────────────────
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Helper functions ─────────────────────────────────────────────────────
+
+    /// True if the caller is signed in.
+    function isAuthed() {
+      return request.auth != null;
+    }
+
+    /// True if the caller is the owner of resource {uid}.
+    function isOwner(uid) {
+      return isAuthed() && request.auth.uid == uid;
+    }
+
+    /// True if request.auth.uid appears in the chat's participants array.
+    function isParticipant(chatData) {
+      return isAuthed() && request.auth.uid in chatData.participants;
+    }
+
+    /// True when the ONLY change to the document is the removal of EXACTLY ONE key
+    /// from the 'oneTimePreKeys' map, with no value modifications to retained keys,
+    /// no new keys injected, and no other top-level field affected.
+    ///
+    /// Uses Firestore Rules MapDiff API (available in rules_version = '2'):
+    ///   .removedKeys() — keys present in existing but absent in incoming
+    ///   .addedKeys()   — keys present in incoming but absent in existing
+    ///   .changedKeys() — keys present in both but whose values differ
+    ///
+    /// TeleX real flow (KeyManager.kt fetchAndConsumePreKeyBundle):
+    ///   transaction.update(bundleRef, "oneTimePreKeys.$keyIdStr", FieldValue.delete())
+    /// From the rules' view this produces a document where oneTimePreKeys has exactly
+    /// one fewer key — all three MapDiff constraints are satisfied by this operation.
+    function isOnlyOneTimePreKeyConsumption() {
+      let incoming = request.resource.data;
+      let existing = resource.data;
+
+      // Step 1: Only 'oneTimePreKeys' may appear in the top-level diff.
+      let topLevelChanged = incoming.diff(existing).affectedKeys();
+      let onlyPrekeysChanged = topLevelChanged.hasOnly(['oneTimePreKeys']);
+
+      // Step 2: Diff the oneTimePreKeys maps themselves (MapDiff).
+      let prekeyDiff = incoming.oneTimePreKeys.diff(existing.oneTimePreKeys);
+
+      // Exactly one key removed, none added, none modified in value.
+      let exactlyOneRemoved = prekeyDiff.removedKeys().size() == 1;
+      let noKeysAdded       = prekeyDiff.addedKeys().size()   == 0;
+      let noKeysChanged     = prekeyDiff.changedKeys().size()  == 0;
+
+      return onlyPrekeysChanged && exactlyOneRemoved && noKeysAdded && noKeysChanged;
+    }
+
+    // ── Validation Helpers ───────────────────────────────────────────────────
+
+    /// Validate user profile data schema and bounds
+    function isValidUserProfile(data) {
+      let allowedKeys = ['username', 'dob', 'email', 'profilePictureUrl'];
+      return data.keys().hasOnly(allowedKeys)
+          && ('username' in data)
+          && data.username is string
+          && data.username.size() >= 3
+          && data.username.size() <= 30
+          && data.username.matches('^[a-z0-9_]+$')
+          && (!('dob' in data) || (data.dob is string && data.dob.size() <= 20))
+          && (!('email' in data) || (data.email is string && data.email.size() <= 100))
+          && (!('profilePictureUrl' in data) || (data.profilePictureUrl is string && data.profilePictureUrl.size() <= 1000));
+    }
+
+    /// Validate chat document creation
+    function isValidChatCreate(data) {
+      let allowedKeys = ['participants', 'participantNames', 'participantPhotos', 'lastMessage', 'lastMessageTimestamp', 'createdAt'];
+      return data.keys().hasOnly(allowedKeys)
+          && ('participants' in data)
+          && data.participants is list
+          && data.participants.size() == 2
+          && data.participants[0] is string
+          && data.participants[1] is string
+          && data.participants[0] != data.participants[1]
+          && request.auth.uid in data.participants
+          && (!('lastMessage' in data) || (data.lastMessage is string && data.lastMessage.size() <= 500))
+          && (!('lastMessageTimestamp' in data) || data.lastMessageTimestamp is number)
+          && (!('createdAt' in data) || data.createdAt is number);
+    }
+
+    /// Validate chat document update
+    function isValidChatUpdate(incoming, existing) {
+      let allowedUpdates = ['lastMessage', 'lastMessageTimestamp', 'participantNames', 'participantPhotos'];
+      return incoming.participants == existing.participants
+          && incoming.diff(existing).affectedKeys().hasOnly(allowedUpdates)
+          && (!('lastMessage' in incoming) || (incoming.lastMessage is string && incoming.lastMessage.size() <= 500))
+          && (!('lastMessageTimestamp' in incoming) || incoming.lastMessageTimestamp is number);
+    }
+
+    /// Validate message document creation
+    function isValidMessageCreate(data, chatId) {
+      let allowedKeys = ['senderId', 'ciphertext', 'messageType', 'senderDeviceId', 'text', 'imageUrl', 'timestampMillis', 'status'];
+      return data.keys().hasOnly(allowedKeys)
+          && data.senderId == request.auth.uid
+          && data.status == 'sent'
+          && data.timestampMillis is number
+          && (!('ciphertext' in data) || data.ciphertext == null || (data.ciphertext is string && data.ciphertext.size() <= 65536))
+          && (!('text' in data) || data.text == null || (data.text is string && data.text.size() <= 5000))
+          && (!('imageUrl' in data) || data.imageUrl == null || (data.imageUrl is string && data.imageUrl.size() <= 1000))
+          && (!('messageType' in data) || data.messageType == null || (data.messageType is int && data.messageType >= 1 && data.messageType <= 10))
+          && (!('senderDeviceId' in data) || data.senderDeviceId == null || data.senderDeviceId is int);
+    }
+
+    /// Validate owner prekey bundle
+    function isValidOwnerBundle(data) {
+      let allowedKeys = [
+        'registrationId', 'deviceId', 'identityKey',
+        'signedPreKeyId', 'signedPreKey', 'signedPreKeySignature', 'signedPreKeyTimestamp',
+        'kyberPreKeyId', 'kyberPreKey', 'kyberPreKeySignature', 'kyberPreKeyTimestamp',
+        'oneTimePreKeys', 'updatedAt'
+      ];
+      return data.keys().hasOnly(allowedKeys)
+          && (!('identityKey' in data) || (data.identityKey is string && data.identityKey.size() <= 500))
+          && (!('signedPreKey' in data) || (data.signedPreKey is string && data.signedPreKey.size() <= 500))
+          && (!('kyberPreKey' in data) || (data.kyberPreKey is string && data.kyberPreKey.size() <= 5000))
+          && (!('oneTimePreKeys' in data) || (data.oneTimePreKeys is map && data.oneTimePreKeys.size() <= 250));
+    }
+
+    // ── users/{uid} ──────────────────────────────────────────────────────────
+    //
+    // Top-level user profile documents (username, profilePictureUrl, etc.)
+    //  - Any authenticated user can read a profile (needed for chat creation,
+    //    name display, avatar fetching).
+    //  - Only the owner can write their own profile, subject to schema & size bounds.
+
+    match /users/{uid} {
+      allow read: if isAuthed();
+      allow create, update: if isOwner(uid) && isValidUserProfile(request.resource.data);
+      allow delete: if false;
+
+      // ── users/{uid}/prekey_bundle/{bundleId} ──────────────────────────────
+      //
+      // Public Signal Protocol prekey bundles.
+      // Only the 'current' document is used; the wildcard future-proofs rotation.
+      //
+      // READ  — any authenticated peer may read to establish an E2EE session.
+      // WRITE (create / owner full update) — only the owning user may set their bundle.
+      // UPDATE (prekey consumption) — any authenticated peer may remove one-time prekeys
+      //         from the oneTimePreKeys map ONLY, via an atomic transaction.
+      //
+      // ⚠ Prekey-exhaustion risk: a malicious authenticated client can call the
+      //   Firestore transaction repeatedly to drain another user's one-time prekeys,
+      //   forcing fallback to repeated-use of the signed/Kyber prekey (which is still
+      //   secure, just loses forward secrecy on that session).
+      //
+      //   RECOMMENDED MITIGATION — Firebase Cloud Function:
+      //   Deploy a callable function `consumeOneTimePreKey(targetUid)` that:
+      //     1. Rate-limits calls per (callerUid, targetUid) pair (e.g. 1/hour).
+      //     2. Uses Admin SDK to atomically remove a prekey and return it.
+      //     3. Revoke client-side UPDATE permission below once the function is live.
+      //   Until then, this rule enforces the minimal-footprint constraint: the caller
+      //   can only remove from oneTimePreKeys and cannot touch identity / signed / Kyber
+      //   keys or any other field.
+
+      match /prekey_bundle/{bundleId} {
+        // Any authenticated user may read public key bundles (needed for session setup).
+        allow read: if isAuthed();
+
+        // Owner may create or fully replace their bundle (publishPublicPreKeyBundle).
+        allow create, update: if isOwner(uid) && isValidOwnerBundle(request.resource.data);
+
+        // Any authenticated peer may consume (remove) one-time prekeys atomically.
+        // The field-level diff check above ensures they cannot touch anything else.
+        allow update: if isAuthed() && isOnlyOneTimePreKeyConsumption();
+      }
+    }
+
+    // ── chats/{chatId} ───────────────────────────────────────────────────────
+    //
+    // Chat metadata documents (participants, lastMessage, etc.)
+    //  - Readable and writable only by participants listed in the document.
+    //  - On create the caller must include themselves in participants (exactly 2 participants).
+    //  - PARTICIPANTS ARRAY IS IMMUTABLE AFTER CREATION. The update rule enforces
+    //    strict equality so no client can inject, remove, or reorder participants.
+
+    match /chats/{chatId} {
+      // Read: only participants.
+      allow read: if isParticipant(resource.data);
+
+      // Create: caller must be a participant; strictly 2 participants; validated fields.
+      allow create: if isAuthed() && isValidChatCreate(request.resource.data);
+
+      // Update: only existing participants (e.g. updating lastMessage / timestamps).
+      // Strict equality on participants blocks injection, removal, and reordering.
+      allow update: if isParticipant(resource.data)
+                    && isValidChatUpdate(request.resource.data, resource.data);
+
+      // Delete: not permitted from the client.
+      allow delete: if false;
+
+      // ── chats/{chatId}/messages/{messageId} ──────────────────────────────
+      //
+      // Individual message documents.
+      //  - Readable by both participants (needed to display conversation).
+      //  - Create: caller must be a participant AND senderId == caller's UID
+      //    AND payload size and types are strictly bounded.
+      //  - Update: participants may update 'status' to 'read' (read receipts).
+      //    They may NOT change senderId, ciphertext, messageType, timestampMillis,
+      //    imageUrl, or text once created.
+      //  - Delete: not permitted from the client.
+
+      match /messages/{messageId} {
+        // Read: only participants of the parent chat.
+        allow read: if isParticipant(get(/databases/$(database)/documents/chats/$(chatId)).data);
+
+        // Create: participant + senderId == caller's UID + schema/payload bounds.
+        allow create: if isAuthed()
+                      && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants
+                      && isValidMessageCreate(request.resource.data, chatId);
+
+        // Update: only to flip 'status' to 'read'; no other fields may change.
+        allow update: if isAuthed()
+                      && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants
+                      && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
+                      && request.resource.data.status == 'read';
+
+        allow delete: if false;
+      }
+    }
+
+  }
+}

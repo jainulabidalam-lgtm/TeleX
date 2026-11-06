@@ -24,6 +24,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.e2eechat.app.crypto.KeyManager
+import com.e2eechat.app.crypto.KeySyncResult
 import com.e2eechat.app.data.AuthViewModel
 import com.e2eechat.app.data.ChatViewModel
 import com.e2eechat.app.data.UserPreferences
@@ -156,18 +157,24 @@ fun E2EEChatApp(
         val user = FirebaseAuth.getInstance().currentUser
         val uid = user?.uid?.trim().orEmpty()
         if (loggedIn && !email.isNullOrBlank()) {
+            loggedInUserEmail = email
+            currentScreen = Screen.ChatList
             if (uid.isNotBlank()) {
-                val keyRes = keys.ensureKeysForUser(userIdentifier = uid, fallbackIdentifier = email)
-                try {
-                    keys.publishPublicPreKeyBundle(uid, keyRes)
-                } catch (e: Exception) {
-                    android.util.Log.e("MainActivity", "Failed to sync prekey bundle to Firestore on startup for uid: $uid", e)
+                coroutineScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                    val syncResult = keys.syncKeysOnLogin(uid, email)
+                    when (syncResult) {
+                        is KeySyncResult.MissingLocalKeys -> {
+                            snackbarHostState.showSnackbar(syncResult.message)
+                        }
+                        is KeySyncResult.IdentityMismatch -> {
+                            snackbarHostState.showSnackbar(syncResult.message)
+                        }
+                        else -> {}
+                    }
                 }
             } else {
                 android.util.Log.e("MainActivity", "Firebase UID is blank on startup, cannot sync prekey bundle")
             }
-            loggedInUserEmail = email
-            currentScreen = Screen.ChatList
         } else {
             currentScreen = Screen.Login
         }
@@ -218,24 +225,45 @@ fun E2EEChatApp(
                 LoginScreen(
                     authViewModel = authViewModel,
                     onLoginSuccess = {
-                        coroutineScope.launch {
-                            val user = FirebaseAuth.getInstance().currentUser
-                            val email = user?.email?.trim().orEmpty()
-                            val uid = user?.uid?.trim().orEmpty()
-                            if (email.isBlank() || uid.isBlank()) {
-                                android.util.Log.e("MainActivity", "Cannot publish prekeys on login: blank email or UID (email='$email', uid='$uid')")
+                        val user = FirebaseAuth.getInstance().currentUser
+                        val email = user?.email?.trim().orEmpty()
+                        val uid = user?.uid?.trim().orEmpty()
+                        if (email.isBlank() || uid.isBlank()) {
+                            android.util.Log.e("MainActivity", "Cannot restore account on login: blank email or UID (email='$email', uid='$uid')")
+                            coroutineScope.launch {
                                 snackbarHostState.showSnackbar("Login failed: missing user credentials. Please try again.")
-                                return@launch
                             }
-                            try {
-                                val keyRes = keys.ensureKeysForUser(userIdentifier = uid, fallbackIdentifier = email)
-                                keys.publishPublicPreKeyBundle(uid, keyRes)
-                                prefs.saveLoginState(email = email, isLoggedIn = true)
-                                loggedInUserEmail = email
-                                currentScreen = Screen.ChatList
-                            } catch (e: Exception) {
-                                android.util.Log.e("MainActivity", "Failed to publish prekeys on login for uid: $uid", e)
-                                snackbarHostState.showSnackbar("Failed to publish encryption keys: ${e.localizedMessage ?: "Network error"}. Please try again.")
+                            return@LoginScreen
+                        }
+
+                        // 1. Immediately restore account and persist login state
+                        coroutineScope.launch {
+                            prefs.saveLoginState(email = email, isLoggedIn = true)
+                        }
+                        loggedInUserEmail = email
+                        currentScreen = Screen.ChatList
+
+                        // 2. Run prekey synchronization separately in background with proper error handling
+                        coroutineScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                            val syncResult = keys.syncKeysOnLogin(uid, email)
+                            when (syncResult) {
+                                is KeySyncResult.Synced -> {
+                                    android.util.Log.i("MainActivity", "Prekeys successfully synchronized for uid: $uid")
+                                }
+                                is KeySyncResult.NewIdentityPublished -> {
+                                    android.util.Log.i("MainActivity", "Initial prekeys generated and published for new user uid: $uid")
+                                }
+                                is KeySyncResult.MissingLocalKeys -> {
+                                    android.util.Log.w("MainActivity", "Missing local keys for uid: $uid: ${syncResult.message}")
+                                    snackbarHostState.showSnackbar(syncResult.message)
+                                }
+                                is KeySyncResult.IdentityMismatch -> {
+                                    android.util.Log.w("MainActivity", "Identity mismatch for uid: $uid: ${syncResult.message}")
+                                    snackbarHostState.showSnackbar(syncResult.message)
+                                }
+                                is KeySyncResult.NetworkError -> {
+                                    android.util.Log.w("MainActivity", "Network error during prekey sync for uid: $uid: ${syncResult.error.message}")
+                                }
                             }
                         }
                     },
@@ -257,24 +285,35 @@ fun E2EEChatApp(
                 ProfilePictureScreen(
                     onDone = { uri ->
                         authViewModel.uploadProfilePictureAndFinish(uri, context) {
-                            coroutineScope.launch {
-                                val user = FirebaseAuth.getInstance().currentUser
-                                val email = user?.email?.trim().orEmpty()
-                                val uid = user?.uid?.trim().orEmpty()
-                                if (email.isBlank() || uid.isBlank()) {
-                                    android.util.Log.e("MainActivity", "Cannot complete onboarding: authenticated user has blank email or UID (email='$email', uid='$uid')")
+                            val user = FirebaseAuth.getInstance().currentUser
+                            val email = user?.email?.trim().orEmpty()
+                            val uid = user?.uid?.trim().orEmpty()
+                            if (email.isBlank() || uid.isBlank()) {
+                                android.util.Log.e("MainActivity", "Cannot complete onboarding: authenticated user has blank email or UID (email='$email', uid='$uid')")
+                                coroutineScope.launch {
                                     snackbarHostState.showSnackbar("Profile setup error: missing user credentials. Please try again.")
-                                    return@launch
                                 }
-                                try {
-                                    val keyRes = keys.ensureKeysForUser(userIdentifier = uid, fallbackIdentifier = email)
-                                    keys.publishPublicPreKeyBundle(uid, keyRes)
-                                    prefs.saveLoginState(email = email, isLoggedIn = true)
-                                    loggedInUserEmail = email
-                                    currentScreen = Screen.ChatList
-                                } catch (e: Exception) {
-                                    android.util.Log.e("MainActivity", "Failed to publish Signal prekeys on onboarding finish for uid: $uid", e)
-                                    snackbarHostState.showSnackbar("Failed to publish encryption keys: ${e.localizedMessage ?: "Network error"}. Please tap to retry.")
+                                return@uploadProfilePictureAndFinish
+                            }
+
+                            // 1. Immediately persist login state and navigate to ChatList
+                            coroutineScope.launch {
+                                prefs.saveLoginState(email = email, isLoggedIn = true)
+                            }
+                            loggedInUserEmail = email
+                            currentScreen = Screen.ChatList
+
+                            // 2. Run prekey synchronization separately in background
+                            coroutineScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                                val syncResult = keys.syncKeysOnLogin(uid, email)
+                                when (syncResult) {
+                                    is KeySyncResult.MissingLocalKeys -> {
+                                        snackbarHostState.showSnackbar(syncResult.message)
+                                    }
+                                    is KeySyncResult.IdentityMismatch -> {
+                                        snackbarHostState.showSnackbar(syncResult.message)
+                                    }
+                                    else -> {}
                                 }
                             }
                         }
@@ -292,6 +331,9 @@ fun E2EEChatApp(
                     onNewChatClick = {
                         currentScreen = Screen.UserBrowse
                     },
+                    onSearchClick = {
+                        currentScreen = Screen.UserBrowse
+                    },
                     onSettingsClick = {
                         currentScreen = Screen.Settings
                     }
@@ -301,6 +343,7 @@ fun E2EEChatApp(
                 SettingsScreen(
                     onLogout = {
                         coroutineScope.launch {
+                            authViewModel.signOut()
                             prefs.clearLoginState()
                             loggedInUserEmail = null
                             currentScreen = Screen.Login

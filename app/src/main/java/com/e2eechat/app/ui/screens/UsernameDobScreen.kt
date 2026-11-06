@@ -84,7 +84,7 @@ fun UsernameDobScreen(
                 ClayInsetTextField(
                     value = username,
                     onValueChange = {
-                        username = it.filter { c -> c.isLetterOrDigit() || c == '_' }.lowercase()
+                        username = it.filter { c -> c.isLetterOrDigit() || c == '_' }.lowercase().take(30)
                         error = null
                     },
                     label = "Username",
@@ -144,6 +144,7 @@ fun UsernameDobScreen(
                     onClick = {
                         when {
                             username.length < 3 -> error = "Username must be at least 3 characters"
+                            username.length > 30 -> error = "Username cannot exceed 30 characters"
                             dobMillis == null -> error = "Select your date of birth"
                             else -> onContinue(username, dobText)
                         }

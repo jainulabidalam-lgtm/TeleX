@@ -49,6 +49,9 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
             excludes += listOf("libsignal_jni*.dylib", "signal_jni*.dll")
         }
+        jniLibs {
+            excludes += listOf("**/libsignal_jni_testing.so")
+        }
     }
 }
 

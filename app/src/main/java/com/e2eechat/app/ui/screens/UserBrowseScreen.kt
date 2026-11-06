@@ -41,7 +41,9 @@ fun UserBrowseScreen(
     LaunchedEffect(Unit) {
         try {
             val currentUid = FirebaseAuth.getInstance().currentUser?.uid
-            val snapshot = FirebaseFirestore.getInstance().collection("users").get().await()
+            val snapshot = FirebaseFirestore.getInstance().collection("users")
+                .limit(50)
+                .get().await()
             users = snapshot.documents.mapNotNull { doc ->
                 val uid = doc.id
                 if (uid == currentUid) return@mapNotNull null
