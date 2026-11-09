@@ -10,3 +10,7 @@ local.properties
 
 .kotlin/
 build_log.txt
+
+# Node dependencies and extracted library artifacts
+node_modules/
+temp_libsignal/

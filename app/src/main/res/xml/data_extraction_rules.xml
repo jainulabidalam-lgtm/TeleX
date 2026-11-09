@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="secure_e2ee_keys.xml" />
+        <exclude domain="sharedpref" path="telex_signal_store_" />
+        <exclude domain="database" path="telex_chat_db" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="secure_e2ee_keys.xml" />
+        <exclude domain="sharedpref" path="telex_signal_store_" />
+        <exclude domain="database" path="telex_chat_db" />
+    </device-transfer>
+</data-extraction-rules>

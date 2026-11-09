@@ -5,6 +5,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -17,8 +20,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.DoneAll
-import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.*
@@ -26,17 +29,21 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
-import com.e2eechat.app.data.MockData
 import com.e2eechat.app.model.Chat
 import com.e2eechat.app.model.Message
+import com.e2eechat.app.model.MessageStatus
 import com.e2eechat.app.ui.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -45,10 +52,20 @@ fun ChatScreen(
     chat: Chat,
     onBackClick: () -> Unit,
     onSendMessage: (String) -> Unit,
-    onSendImage: (Uri) -> Unit = {}
+    onSendImage: (Uri) -> Unit = {},
+    onImageClick: ((String) -> Unit)? = null
 ) {
     var inputText by remember { mutableStateOf("") }
+    var viewingImageUrl by remember { mutableStateOf<String?>(null) }
     val listState = rememberLazyListState()
+
+    val handleImageClick: (String) -> Unit = { url ->
+        if (onImageClick != null) {
+            onImageClick(url)
+        } else {
+            viewingImageUrl = url
+        }
+    }
 
     val imagePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -72,155 +89,158 @@ fun ChatScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                navigationIcon = {
-                    IconButton(onClick = onBackClick) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Back",
-                            tint = MaterialTheme.colorScheme.onSurface
-                        )
-                    }
-                },
-                title = {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(38.dp)
-                                .clip(CircleShape)
-                                .background(Color(chat.avatarColorHex)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = chat.avatarInitials,
-                                style = Typography.titleMedium.copy(fontWeight = FontWeight.Bold, fontSize = 14.sp),
-                                color = Color.White
+            Column {
+                TopAppBar(
+                    navigationIcon = {
+                        IconButton(onClick = onBackClick) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Back",
+                                tint = TeleXTextPrimary
                             )
                         }
-
-                        Spacer(modifier = Modifier.width(10.dp))
-
-                        Column {
-                            Text(
-                                text = chat.contactName,
-                                style = Typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically
+                    },
+                    title = {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .clip(CircleShape)
+                                    .background(TeleXPrimaryContainer),
+                                contentAlignment = Alignment.Center
                             ) {
-                                Icon(
-                                    imageVector = Icons.Filled.Lock,
-                                    contentDescription = "E2E",
-                                    tint = SecurityLockBadge,
-                                    modifier = Modifier.size(11.dp)
-                                )
-                                Spacer(modifier = Modifier.width(3.dp))
                                 Text(
-                                    text = chat.lastSeenText,
+                                    text = chat.avatarInitials,
+                                    style = Typography.titleMedium.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp
+                                    ),
+                                    color = TeleXPrimaryDeep
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.width(10.dp))
+
+                            Column {
+                                Text(
+                                    text = chat.contactName,
+                                    style = Typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                                    color = TeleXTextPrimary
+                                )
+                                val subtitleText = when {
+                                    chat.isOnline -> "Online"
+                                    chat.lastSeenText.isNotBlank() -> chat.lastSeenText
+                                    else -> "Direct Message"
+                                }
+                                Text(
+                                    text = subtitleText,
                                     style = Typography.labelMedium.copy(fontSize = 11.sp),
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    color = TeleXTextSecondary
                                 )
                             }
                         }
-                    }
-                },
-                actions = {
-                    IconButton(onClick = { /* Voice call preview */ }) {
-                        Icon(
-                            imageVector = Icons.Filled.Phone,
-                            contentDescription = "Voice Call",
-                            tint = AccentLightViolet
-                        )
-                    }
-                    IconButton(onClick = { /* Video call preview */ }) {
-                        Icon(
-                            imageVector = Icons.Filled.Videocam,
-                            contentDescription = "Video Call",
-                            tint = AccentLightViolet
-                        )
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface
+                    },
+                    actions = {
+                        IconButton(onClick = { /* Voice call preview */ }) {
+                            Icon(
+                                imageVector = Icons.Filled.Phone,
+                                contentDescription = "Voice Call",
+                                tint = TeleXTextSecondary
+                            )
+                        }
+                        IconButton(onClick = { /* Video call preview */ }) {
+                            Icon(
+                                imageVector = Icons.Filled.Videocam,
+                                contentDescription = "Video Call",
+                                tint = TeleXTextSecondary
+                            )
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = TeleXBackground
+                    )
                 )
-            )
+                HorizontalDivider(thickness = 0.5.dp, color = TeleXDivider)
+            }
         },
         bottomBar = {
-            Surface(
-                color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 8.dp,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp, vertical = 10.dp)
-                        .navigationBarsPadding()
-                        .imePadding(),
-                    verticalAlignment = Alignment.CenterVertically
+            Column {
+                HorizontalDivider(thickness = 0.5.dp, color = TeleXDivider)
+                Surface(
+                    color = TeleXBackground,
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    IconButton(
-                        onClick = { imagePickerLauncher.launch("image/*") }
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.AttachFile,
-                            contentDescription = "Attach Image",
-                            tint = AccentLightViolet
-                        )
-                    }
-
-                    OutlinedTextField(
-                        value = inputText,
-                        onValueChange = { inputText = it },
-                        placeholder = {
-                            Text(
-                                text = "Message (E2EE)",
-                                style = Typography.bodyMedium,
-                                color = TextMuted
-                            )
-                        },
+                    Row(
                         modifier = Modifier
-                            .weight(1f)
-                            .heightIn(min = 48.dp, max = 120.dp),
-                        shape = RoundedCornerShape(24.dp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                            focusedBorderColor = AccentBlueViolet,
-                            unfocusedBorderColor = MaterialTheme.colorScheme.outline,
-                            focusedTextColor = MaterialTheme.colorScheme.onSurface,
-                            unfocusedTextColor = MaterialTheme.colorScheme.onSurface
-                        ),
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                        keyboardActions = KeyboardActions(onSend = { handleSend() })
-                    )
-
-                    Spacer(modifier = Modifier.width(8.dp))
-
-                    IconButton(
-                        onClick = { handleSend() },
-                        enabled = inputText.isNotBlank(),
-                        modifier = Modifier
-                            .size(48.dp)
-                            .clip(CircleShape)
-                            .background(
-                                if (inputText.isNotBlank()) AccentBlueViolet else DarkSurfaceSubtle
-                            )
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 8.dp)
+                            .navigationBarsPadding()
+                            .imePadding(),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.Send,
-                            contentDescription = "Send Message",
-                            tint = if (inputText.isNotBlank()) TextOnAccent else TextMuted,
-                            modifier = Modifier.size(20.dp)
+                        IconButton(
+                            onClick = { imagePickerLauncher.launch("image/*") }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.AttachFile,
+                                contentDescription = "Attach Image",
+                                tint = TeleXTextSecondary
+                            )
+                        }
+
+                        OutlinedTextField(
+                            value = inputText,
+                            onValueChange = { inputText = it },
+                            placeholder = {
+                                Text(
+                                    text = "Message",
+                                    style = Typography.bodyMedium,
+                                    color = TeleXTextMuted
+                                )
+                            },
+                            modifier = Modifier
+                                .weight(1f)
+                                .heightIn(min = 44.dp, max = 120.dp),
+                            shape = RoundedCornerShape(22.dp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedContainerColor = BubbleReceivedBg,
+                                unfocusedContainerColor = BubbleReceivedBg,
+                                focusedBorderColor = TeleXPrimary,
+                                unfocusedBorderColor = BubbleReceivedBorder,
+                                focusedTextColor = TeleXTextPrimary,
+                                unfocusedTextColor = TeleXTextPrimary,
+                                cursorColor = TeleXPrimary
+                            ),
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                            keyboardActions = KeyboardActions(onSend = { handleSend() })
                         )
+
+                        Spacer(modifier = Modifier.width(8.dp))
+
+                        IconButton(
+                            onClick = { handleSend() },
+                            enabled = inputText.isNotBlank(),
+                            modifier = Modifier
+                                .size(44.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    if (inputText.isNotBlank()) TeleXPrimary else TeleXOutlineVariant.copy(alpha = 0.5f)
+                                )
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.Send,
+                                contentDescription = "Send Message",
+                                tint = if (inputText.isNotBlank()) TeleXTextOnPrimary else TeleXTextMuted,
+                                modifier = Modifier.size(19.dp)
+                            )
+                        }
                     }
                 }
             }
         },
-        containerColor = MaterialTheme.colorScheme.background
+        containerColor = TeleXBackground
     ) { paddingValues ->
         LazyColumn(
             state = listState,
@@ -233,17 +253,29 @@ fun ChatScreen(
         ) {
             itemsIndexed(
                 items = chat.messages,
-                key = { _, msg -> msg.id }
+                key = { _, msg -> msg.id },
+                contentType = { _, msg -> if (msg.imageUrl != null) "image" else "text" }
             ) { _, message ->
-                MessageBubble(message = message)
+                MessageBubble(
+                    message = message,
+                    onImageClick = handleImageClick
+                )
             }
         }
+    }
+
+    viewingImageUrl?.let { url ->
+        FullScreenImageViewer(
+            imageUrl = url,
+            onDismiss = { viewingImageUrl = null }
+        )
     }
 }
 
 @Composable
 private fun MessageBubble(
-    message: Message
+    message: Message,
+    onImageClick: (String) -> Unit = {}
 ) {
     val isFromMe = message.isFromMe
 
@@ -271,30 +303,36 @@ private fun MessageBubble(
     ) {
         Surface(
             shape = bubbleShape,
-            color = if (isFromMe) BubbleSentCaramel else BubbleReceivedGrey,
+            color = if (isFromMe) BubbleSentBg else BubbleReceivedBg,
             modifier = Modifier
                 .widthIn(max = 290.dp)
                 .border(
                     width = if (!isFromMe) 0.5.dp else 0.dp,
-                    color = MaterialTheme.colorScheme.outline,
+                    color = BubbleReceivedBorder,
                     shape = bubbleShape
                 )
         ) {
             Column(
                 modifier = Modifier.padding(
                     horizontal = if (message.imageUrl != null) 6.dp else 14.dp,
-                    vertical = if (message.imageUrl != null) 6.dp else 10.dp
+                    vertical = if (message.imageUrl != null) 6.dp else 9.dp
                 )
             ) {
                 if (message.imageUrl != null) {
                     AsyncImage(
-                        model = message.imageUrl,
+                        model = coil.request.ImageRequest.Builder(androidx.compose.ui.platform.LocalContext.current)
+                            .data(message.imageUrl)
+                            .size(520, 520)
+                            .crossfade(200)
+                            .memoryCacheKey(message.imageUrl)
+                            .build(),
                         contentDescription = "Attached image",
                         contentScale = ContentScale.Crop,
                         modifier = Modifier
                             .widthIn(max = 260.dp)
                             .heightIn(max = 260.dp)
                             .clip(RoundedCornerShape(12.dp))
+                            .clickable { onImageClick(message.imageUrl) }
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                 }
@@ -303,7 +341,7 @@ private fun MessageBubble(
                     Text(
                         text = message.text,
                         style = Typography.bodyLarge,
-                        color = if (isFromMe) BubbleSentCaramelText else BubbleReceivedGreyText
+                        color = if (isFromMe) BubbleSentText else BubbleReceivedText
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                 }
@@ -315,15 +353,16 @@ private fun MessageBubble(
                     Text(
                         text = message.timestamp,
                         style = Typography.labelMedium.copy(fontSize = 10.5.sp),
-                        color = if (isFromMe) BubbleSentTime else MaterialTheme.colorScheme.onSurfaceVariant
+                        color = if (isFromMe) BubbleSentTime else BubbleReceivedTime
                     )
 
                     if (isFromMe) {
                         Spacer(modifier = Modifier.width(4.dp))
+                        val isRead = message.status == MessageStatus.READ
                         Icon(
-                            imageVector = Icons.Filled.DoneAll,
-                            contentDescription = "Read Status",
-                            tint = AccentLightViolet,
+                            imageVector = if (isRead) Icons.Filled.DoneAll else Icons.Filled.Done,
+                            contentDescription = if (isRead) "Read" else "Sent",
+                            tint = if (isRead) BubbleSentTickRead else BubbleSentTickSent,
                             modifier = Modifier.size(14.dp)
                         )
                     }
@@ -333,26 +372,92 @@ private fun MessageBubble(
     }
 }
 
-@Preview(showBackground = true, backgroundColor = 0xFF09090D, name = "Chat Screen - Dark Mode")
 @Composable
-private fun ChatScreenDarkPreview() {
-    E2EEChatTheme(darkTheme = true) {
-        ChatScreen(
-            chat = MockData.sampleChats.first(),
-            onBackClick = {},
-            onSendMessage = {}
+fun FullScreenImageViewer(
+    imageUrl: String,
+    onDismiss: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
         )
-    }
-}
+    ) {
+        var scale by remember { mutableFloatStateOf(1f) }
+        var offset by remember { mutableStateOf(Offset.Zero) }
 
-@Preview(showBackground = true, backgroundColor = 0xFFF8F9FA, name = "Chat Screen - Light Mode")
-@Composable
-private fun ChatScreenLightPreview() {
-    E2EEChatTheme(darkTheme = false) {
-        ChatScreen(
-            chat = MockData.sampleChats.first(),
-            onBackClick = {},
-            onSendMessage = {}
-        )
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+        ) {
+            AsyncImage(
+                model = coil.request.ImageRequest.Builder(androidx.compose.ui.platform.LocalContext.current)
+                    .data(imageUrl)
+                    .crossfade(200)
+                    .build(),
+                contentDescription = "Full-screen photo",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(Unit) {
+                        detectTapGestures(
+                            onDoubleTap = {
+                                if (scale > 1f) {
+                                    scale = 1f
+                                    offset = Offset.Zero
+                                } else {
+                                    scale = 2.5f
+                                    offset = Offset.Zero
+                                }
+                            }
+                        )
+                    }
+                    .pointerInput(Unit) {
+                        detectTransformGestures { _, pan, zoom, _ ->
+                            val newScale = (scale * zoom).coerceIn(1f, 5f)
+                            scale = newScale
+                            if (newScale > 1f) {
+                                val maxOffset = 1500f * (newScale - 1f)
+                                offset = Offset(
+                                    x = (offset.x + pan.x).coerceIn(-maxOffset, maxOffset),
+                                    y = (offset.y + pan.y).coerceIn(-maxOffset, maxOffset)
+                                )
+                            } else {
+                                offset = Offset.Zero
+                            }
+                        }
+                    }
+                    .graphicsLayer {
+                        scaleX = scale
+                        scaleY = scale
+                        translationX = offset.x
+                        translationY = offset.y
+                    }
+            )
+
+            // Top Bar Overlay with Back/Close button
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .statusBarsPadding()
+                    .padding(horizontal = 12.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(
+                    onClick = onDismiss,
+                    modifier = Modifier
+                        .size(44.dp)
+                        .background(Color(0x66000000), CircleShape)
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Back",
+                        tint = Color.White
+                    )
+                }
+            }
+        }
     }
 }

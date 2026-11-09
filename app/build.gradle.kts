@@ -49,6 +49,9 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
             excludes += listOf("libsignal_jni*.dylib", "signal_jni*.dll")
         }
+        jniLibs {
+            excludes += listOf("**/libsignal_jni_testing.so")
+        }
     }
 }
 
@@ -100,4 +103,6 @@ dependencies {
     implementation(platform("io.github.jan-tennert.supabase:bom:3.1.1"))
     implementation("io.github.jan-tennert.supabase:storage-kt")
     implementation("io.ktor:ktor-client-android:3.0.1")
+
+    testImplementation("junit:junit:4.13.2")
 }

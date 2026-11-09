@@ -2,53 +2,91 @@ package com.e2eechat.app.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// Dark-first Core Colors (Near-black backgrounds, high depth)
-val DarkBackground = Color(0xFF09090D)
-val DarkSurface = Color(0xFF13131A)
-val DarkSurfaceVariant = Color(0xFF1A1A24)
-val DarkSurfaceSubtle = Color(0xFF222230)
-val DarkBorder = Color(0xFF2A2A3B)
+// =============================================================================
+// FIXED CORE THEME COLORS
+// =============================================================================
+val TeleXPrimary = Color(0xFF789477)        // Light forest green (Fixed)
+val TeleXBackground = Color(0xFFF8F5ED)     // Soft ivory (Fixed)
 
-// Blue-Violet Signature Accent Palette
-val AccentBlueViolet = Color(0xFF6E56CF)      // Primary Accent
-val AccentLightViolet = Color(0xFF8B75FF)     // Glowing Highlights
-val AccentDarkViolet = Color(0xFF533AB5)      // Pressed / Deep Accent
-val AccentMutedBg = Color(0x266E56CF)         // Translucent Badge / Shield fill
-val AccentGlow = Color(0x4D7C5CFC)
+// =============================================================================
+// DERIVED PRIMARY TONAL PALETTE (Derived from #789477)
+// =============================================================================
+val TeleXPrimaryDark = Color(0xFF5E785D)     // Pressed state / deep accent
+val TeleXPrimaryDeep = Color(0xFF334232)     // Ultra-deep forest for high-contrast icons & text
+val TeleXPrimaryMedium = Color(0xFF6B866A)   // Medium forest shade
+val TeleXPrimaryContainer = Color(0xFFE2EBE1)// Soft primary container / chips / badges
+val TeleXPrimaryLight = Color(0xFFA1B7A0)    // Muted / light accent
+val TeleXPrimaryMuted = Color(0x33789477)    // Translucent 20% primary fill
+val TeleXPrimaryBorder = Color(0xFFC7D7C6)   // Subtle primary outline
 
-// Message Bubble Palette
-val BubbleSentBg = Color(0xFF6E56CF)          // Sent Bubble (Accent Blue-Violet)
-val BubbleSentText = Color(0xFFFFFFFF)
-val BubbleSentTime = Color(0xCCFFFFFF)
+// =============================================================================
+// DERIVED BACKGROUND & SURFACE PALETTE (Derived from #F8F5ED)
+// =============================================================================
+val TeleXSurface = Color(0xFFF8F5ED)         // Base soft ivory surface
+val TeleXSurfaceRaised = Color(0xFFFAF7F0)   // Raised clay surface
+val TeleXSurfaceElevated = Color(0xFFF2ECE0) // Subtle card / secondary surface
+val TeleXSurfaceInset = Color(0xFFEDE7DA)    // Sunken clay inset input field
+val TeleXOutline = Color(0xFFDED8CA)         // Clean subtle border
+val TeleXOutlineVariant = Color(0xFFD0C9BA)  // Darker outline for depth
+val TeleXDivider = Color(0xFFE8E2D5)         // Hairline list divider
 
-val BubbleReceivedBg = Color(0xFF1C1C26)      // Received Bubble (Neutral Surface)
-val BubbleReceivedText = Color(0xFFF1F1F6)
-val BubbleReceivedTime = Color(0x99A0A0B2)
+// =============================================================================
+// SOFTENED CLAYMORPHISM 3D SHADOW & HIGHLIGHT TOKENS
+// =============================================================================
+val TeleXClayHighlight = Color(0x4DFFFFFF)   // Soft subtle top-left light reflection (30% white)
+val TeleXClayShadowDark = Color(0x145C5547)  // Soft gentle ambient shadow (8% warm tint)
+val TeleXClayButtonShadow = Color(0x243B4D3A)// Soft shadow under primary raised button (14% forest tint)
 
-// Functional Colors
-val OnlineGreen = Color(0xFF10B981)           // Vibrant status indicator
-val SecurityLockBadge = Color(0xFF9E8CFC)     // Lock icon badge accent
+// =============================================================================
+// ACCESSIBLE TEXT & CONTENT PALETTE
+// =============================================================================
+val TeleXTextPrimary = Color(0xFF222B22)     // High-contrast near-black forest (>11:1 on ivory)
+val TeleXTextSecondary = Color(0xFF5A665A)   // Mid-tone forest slate (>5.5:1 on ivory)
+val TeleXTextMuted = Color(0xFF889488)       // Tertiary placeholder / timestamps
+val TeleXTextOnPrimary = Color(0xFFFFFFFF)   // Pure white on primary #789477
+val TeleXTextOnPrimarySubtle = Color(0xFFE8F0E7) // Secondary white on primary
 
-// Text Palette
-val TextPrimary = Color(0xFFF5F5FA)
-val TextSecondary = Color(0x99A0A0B2)
-val TextMuted = Color(0x66A0A0B2)
-val TextOnAccent = Color(0xFFFFFFFF)
+// =============================================================================
+// MESSAGE BUBBLES
+// =============================================================================
+val BubbleSentBg = Color(0xFF789477)         // Sent bubble (Primary)
+val BubbleSentText = Color(0xFFFFFFFF)       // Sent text
+val BubbleSentTime = Color(0xCCFFFFFF)       // Sent time (80% white)
+val BubbleSentTickSent = Color(0xB3FFFFFF)   // Sent single tick (70% white)
+val BubbleSentTickRead = Color(0xFFE8FCE7)   // Read double tick (bright light mint/ivory)
 
-// Milk Coffee / Deep Beige Light Theme
-val MilkCoffeeBackground = Color(0xFFEFE6D8)
-val MilkCoffeeSurface = Color(0xFFE8DDCC)
-val MilkCoffeeSurfaceVariant = Color(0xFFDCCDB3)
-val MilkCoffeeBorder = Color(0xFFC9B896)
-val CaramelAccent = Color(0xFFB98A4A)
-val CaramelAccentLight = Color(0xFFD8AE72)
-val CaramelAccentDark = Color(0xFF8A6530)
-val MilkCoffeeTextPrimary = Color(0xFF3E2F1C)
-val MilkCoffeeTextSecondary = Color(0xFF7A6A50)
+val BubbleReceivedBg = Color(0xFFEDE7DA)     // Received bubble (Ivory surface variant)
+val BubbleReceivedText = Color(0xFF222B22)   // Received text
+val BubbleReceivedTime = Color(0xFF6E786E)   // Received time
+val BubbleReceivedBorder = Color(0xFFDDD7C8) // Received border
 
-val BubbleSentCaramel = Color(0xFFE8C9A0)
-val BubbleSentCaramelText = Color(0xFF4A3419)
-val BubbleReceivedGrey = Color(0xFFE4E2DD)
-val BubbleReceivedGreyText = Color(0xFF3E3D38)
+// =============================================================================
+// FUNCTIONAL & STATUS COLORS
+// =============================================================================
+val TeleXOnlineGreen = Color(0xFF4A8754)     // Online status indicator (forest-aligned)
+val TeleXError = Color(0xFFBA1A1A)           // Accessible error
+val TeleXOnError = Color(0xFFFFFFFF)
+val TeleXErrorContainer = Color(0xFFFFDAD6)
+val TeleXOnErrorContainer = Color(0xFF410002)
 
-val FabGrey = Color(0xFF4A4A46)
+// =============================================================================
+// BACKWARD-COMPATIBLE ALIASES
+// =============================================================================
+val AccentBlueViolet = TeleXPrimary
+val AccentLightViolet = TeleXPrimaryLight
+val AccentDarkViolet = TeleXPrimaryDark
+val CaramelAccent = TeleXPrimary
+val CaramelAccentLight = TeleXPrimaryContainer
+val CaramelAccentDark = TeleXPrimaryDark
+val OnlineGreen = TeleXOnlineGreen
+val SecurityLockBadge = TeleXPrimary
+val FabGrey = TeleXPrimary
+val TextPrimary = TeleXTextPrimary
+val TextSecondary = TeleXTextSecondary
+val TextMuted = TeleXTextMuted
+val TextOnAccent = TeleXTextOnPrimary
+val BubbleSentCaramel = BubbleSentBg
+val BubbleSentCaramelText = BubbleSentText
+val BubbleReceivedGrey = BubbleReceivedBg
+val BubbleReceivedGreyText = BubbleReceivedText
+val DarkSurfaceSubtle = TeleXOutline

@@ -1,22 +1,24 @@
 package com.e2eechat.app.ui.screens
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.sp
-import com.e2eechat.app.ui.theme.CaramelAccent
-import com.e2eechat.app.ui.theme.CaramelAccentDark
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
+import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.filled.AccountCircle
-import androidx.compose.material.icons.filled.ExitToApp
+import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.e2eechat.app.ui.theme.*
 import com.google.firebase.auth.FirebaseAuth
 
 @Composable
@@ -28,87 +30,136 @@ fun SettingsScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .background(TeleXBackground)
+            .statusBarsPadding()
+            .navigationBarsPadding()
             .padding(24.dp)
     ) {
         Text(
             text = "Settings",
-            style = MaterialTheme.typography.headlineMedium
+            style = Typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
+            color = TeleXTextPrimary
         )
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.fillMaxWidth()
+        // Profile Summary Card (Flat Modern)
+        Surface(
+            shape = RoundedCornerShape(18.dp),
+            color = TeleXSurfaceElevated,
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(0.5.dp, TeleXOutline, RoundedCornerShape(18.dp))
         ) {
-            Icon(
-                imageVector = Icons.Default.AccountCircle,
-                contentDescription = "Account",
-                modifier = Modifier.size(48.dp)
-            )
-            Spacer(modifier = Modifier.width(16.dp))
-            Column {
-                Text(
-                    text = user?.email ?: "Unknown user",
-                    style = MaterialTheme.typography.bodyLarge
-                )
-                Text(
-                    text = "Signed in",
-                    style = MaterialTheme.typography.bodySmall
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(16.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(52.dp)
+                        .clip(CircleShape)
+                        .background(TeleXPrimaryContainer),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.AccountCircle,
+                        contentDescription = "Account",
+                        tint = TeleXPrimary,
+                        modifier = Modifier.size(34.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(16.dp))
+
+                Column {
+                    Text(
+                        text = user?.email ?: "Unknown user",
+                        style = Typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                        color = TeleXTextPrimary
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = "Signed in",
+                        style = Typography.bodySmall,
+                        color = TeleXTextSecondary
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // Privacy Section
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = TeleXSurfaceElevated,
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(0.5.dp, TeleXOutline, RoundedCornerShape(16.dp))
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 14.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Shield,
+                        contentDescription = null,
+                        tint = TeleXPrimary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Text(
+                        text = "Privacy & Security",
+                        style = Typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
+                        color = TeleXTextPrimary
+                    )
+                }
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ArrowForwardIos,
+                    contentDescription = null,
+                    tint = TeleXTextMuted,
+                    modifier = Modifier.size(14.dp)
                 )
             }
         }
 
         Spacer(modifier = Modifier.height(32.dp))
-        HorizontalDivider()
-        Spacer(modifier = Modifier.height(16.dp))
 
-        Text(
-            text = "Privacy Policy",
-            style = MaterialTheme.typography.bodyLarge,
-            modifier = Modifier.fillMaxWidth()
-        )
-
-        Spacer(modifier = Modifier.height(32.dp))
-
-        Button(
+        // Log Out Button (Flat Modern - Forest Green & Ivory Treatment)
+        OutlinedButton(
             onClick = {
                 FirebaseAuth.getInstance().signOut()
                 onLogout()
             },
-            colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.error
+            colors = ButtonDefaults.outlinedButtonColors(
+                containerColor = TeleXSurfaceElevated,
+                contentColor = TeleXPrimaryDark
             ),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Icon(Icons.Default.ExitToApp, contentDescription = null)
-            Spacer(modifier = Modifier.width(8.dp))
-            Text("Log Out")
-        }
-
-        Spacer(modifier = Modifier.height(40.dp))
-
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.Center,
+            border = BorderStroke(1.dp, TeleXPrimary.copy(alpha = 0.45f)),
+            shape = RoundedCornerShape(16.dp),
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(12.dp))
-                .background(CaramelAccent.copy(alpha = 0.15f))
-                .padding(vertical = 12.dp)
+                .height(50.dp)
         ) {
             Icon(
-                imageVector = Icons.Default.Lock,
-                contentDescription = "Encrypted",
-                tint = CaramelAccentDark,
-                modifier = Modifier.size(14.dp)
+                imageVector = Icons.AutoMirrored.Filled.ExitToApp,
+                contentDescription = "Log Out",
+                tint = TeleXPrimaryDark,
+                modifier = Modifier.size(20.dp)
             )
-            Spacer(modifier = Modifier.width(6.dp))
+            Spacer(modifier = Modifier.width(8.dp))
             Text(
-                text = "End-to-end encrypted",
-                style = MaterialTheme.typography.labelMedium.copy(fontSize = 12.sp, fontWeight = FontWeight.Bold),
-                color = CaramelAccentDark
+                text = "Log Out",
+                style = Typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = TeleXPrimaryDark
             )
         }
+
+        Spacer(modifier = Modifier.weight(1f))
     }
 }
