@@ -4,7 +4,8 @@
   "description": "**Document Version:** 1.0.0   **Current State as of:** 23 October 2026   **Repository Root:** `F:\\Telex`   **Target Audience:** Independent Security Auditor (Claude) & Core Engineering Team   **Classification:** Technical Handoff & Security Architecture Specification",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "test:firestore": "mocha security-tests/firestore.rules.test.cjs"
   },
   "repository": {
     "type": "git",
@@ -20,6 +21,10 @@
   "homepage": "https://github.com/jainulabidalam-lgtm/TeleX#readme",
   "devDependencies": {
     "@firebase/rules-unit-testing": "^6.0.0",
-    "firebase": "^13.1.0"
+    "firebase": "^13.1.0",
+    "mocha": "^12.0.3"
+  },
+  "overrides": {
+    "@grpc/grpc-js": "1.13.6"
   }
 }

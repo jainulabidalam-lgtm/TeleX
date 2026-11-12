@@ -14,3 +14,16 @@ build_log.txt
 # Node dependencies and extracted library artifacts
 node_modules/
 temp_libsignal/
+
+# Local logs, backups and audit artifacts
+README.utf16-backup.md
+art-log.txt
+audit-report.json
+firestore-debug.log
+firestore.rules.audit-backup
+idrish-log.txt
+libsignal.zip
+phone1.txt
+phone2.txt
+telex-e2ee-debug.txt
+telex-log.txt
